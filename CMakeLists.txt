@@ -63,6 +63,8 @@ set(SOURCES
     src/renderer/shader.cpp
     src/renderer/renderer.cpp
     src/network/http_client.cpp
+    src/tile_manager.cpp
+    src/ui/sidebar.cpp
     src/stb_impl.cpp)
 
 add_executable(stormview ${SOURCES})

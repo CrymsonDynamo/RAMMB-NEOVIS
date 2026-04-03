@@ -6,6 +6,8 @@
 
 #include "renderer/renderer.hpp"
 #include "network/http_client.hpp"
+#include "tile_manager.hpp"
+#include "ui/sidebar.hpp"
 
 class App {
 public:
@@ -15,32 +17,37 @@ public:
     App(const App&) = delete;
     App& operator=(const App&) = delete;
 
-    bool init(int width = 1280, int height = 720);
+    bool init(int width = 1400, int height = 900);
     void run();
 
 private:
     void update();
     void render();
-    void render_ui();
 
-    // Downloads latest timestamp metadata then fetches zoom-0 tile
-    bool fetch_latest_tile();
+    // Fetch latest timestamp metadata for the current source.
+    // On success: updates state.timestamp and state.timestamp_str.
+    bool fetch_latest_timestamp();
 
-    // GLFW event callbacks (static, dispatch via user pointer)
+    // Reload: clear tiles, set new source on TileManager, fetch timestamp.
+    void reload_source();
+
+    // GLFW callbacks
     static void cb_resize      (GLFWwindow*, int w, int h);
     static void cb_scroll      (GLFWwindow*, double dx, double dy);
     static void cb_mouse_button(GLFWwindow*, int btn, int action, int mods);
     static void cb_cursor_pos  (GLFWwindow*, double x, double y);
+    static void cb_key         (GLFWwindow*, int key, int scancode, int action, int mods);
 
     GLFWwindow* m_window{nullptr};
     Renderer    m_renderer;
     HttpClient  m_http;
+    TileManager m_tiles;
 
-    GLuint      m_tile_tex{0};
-    std::string m_status{"Initializing..."};
-    std::string m_timestamp_label;
+    ViewState   m_state;
 
-    // Pan with left-click drag
+    float       m_sidebar_w{290.0f};
+
+    // Pan drag state
     bool      m_dragging{false};
     glm::vec2 m_drag_start_screen{};
     glm::vec2 m_drag_start_pan{};

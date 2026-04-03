@@ -2,6 +2,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
 #include <string>
+#include <algorithm>
 
 Renderer::~Renderer() {
     if (m_vao) glDeleteVertexArrays(1, &m_vao);
@@ -59,8 +60,16 @@ bool Renderer::init(const char* shader_dir) {
 void Renderer::resize(int width, int height) {
     m_width  = width;
     m_height = height;
-    m_aspect = float(width) / float(height);
-    glViewport(0, 0, width, height);
+    resize_viewport(0, 0, width, height);
+}
+
+void Renderer::resize_viewport(int x, int y, int width, int height) {
+    m_vp_x   = x;
+    m_vp_y   = y;
+    m_vp_w   = std::max(1, width);
+    m_vp_h   = std::max(1, height);
+    m_aspect = float(m_vp_w) / float(m_vp_h);
+    glViewport(m_vp_x, m_vp_y, m_vp_w, m_vp_h);
 }
 
 GLuint Renderer::upload_texture(const unsigned char* rgba, int w, int h) {
@@ -101,6 +110,7 @@ void Renderer::draw_tile(GLuint texture, const TileQuad& quad, float opacity) {
 
 glm::mat4 Renderer::compute_mvp(const TileQuad& quad) const {
     // Orthographic projection: maps visible world region to NDC [-1,1]
+    // m_aspect already reflects the viewport sub-region (excludes sidebar)
     float half_h = 0.5f / m_zoom;
     float half_w = half_h * m_aspect;
 
@@ -123,9 +133,9 @@ glm::mat4 Renderer::compute_mvp(const TileQuad& quad) const {
 }
 
 glm::vec2 Renderer::screen_to_world(glm::vec2 screen_px) const {
-    // Screen pixel → NDC [-1,1]
-    float nx =  (screen_px.x / m_width)  * 2.0f - 1.0f;
-    float ny = -(screen_px.y / m_height) * 2.0f + 1.0f;
+    // Offset by viewport origin, then normalize to [-1,1] within viewport
+    float nx =  ((screen_px.x - m_vp_x) / m_vp_w) * 2.0f - 1.0f;
+    float ny = -((screen_px.y - m_vp_y) / m_vp_h) * 2.0f + 1.0f;
 
     float half_h = 0.5f / m_zoom;
     float half_w = half_h * m_aspect;

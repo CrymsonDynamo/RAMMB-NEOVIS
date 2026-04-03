@@ -26,6 +26,8 @@ public:
 
     bool init(const char* shader_dir);
     void resize(int width, int height);
+    // Set the sub-region of the window used for rendering (sidebar offset)
+    void resize_viewport(int x, int y, int width, int height);
 
     // Upload decoded RGBA pixel data as a GPU texture. Returns GL texture ID.
     GLuint upload_texture(const unsigned char* rgba, int w, int h);
@@ -45,7 +47,9 @@ public:
     glm::vec2 screen_to_world(glm::vec2 screen_px) const;
 
 private:
-    int   m_width{1}, m_height{1};
+    int   m_width{1}, m_height{1};    // full window size
+    int   m_vp_x{0}, m_vp_y{0};
+    int   m_vp_w{1}, m_vp_h{1};      // viewport sub-region
     float m_aspect{1.0f};
 
     glm::vec2 m_pan{0.0f, 0.0f};
