@@ -60,11 +60,13 @@ target_link_libraries(imgui_lib PUBLIC glfw OpenGL::GL)
 set(SOURCES
     src/main.cpp
     src/app.cpp
+    src/animation.cpp
     src/renderer/shader.cpp
     src/renderer/renderer.cpp
     src/network/http_client.cpp
     src/tile_manager.cpp
     src/ui/sidebar.cpp
+    src/ui/timeline.cpp
     src/stb_impl.cpp)
 
 add_executable(stormview ${SOURCES})

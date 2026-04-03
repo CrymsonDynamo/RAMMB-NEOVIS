@@ -3,51 +3,54 @@
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <string>
+#include <vector>
 
 #include "renderer/renderer.hpp"
 #include "network/http_client.hpp"
 #include "tile_manager.hpp"
+#include "animation.hpp"
 #include "ui/sidebar.hpp"
 
 class App {
 public:
     App() = default;
     ~App();
-
     App(const App&) = delete;
     App& operator=(const App&) = delete;
 
-    bool init(int width = 1400, int height = 900);
+    bool init(int width = 1440, int height = 900);
     void run();
 
 private:
-    void update();
+    void update(float dt);
     void render();
 
-    // Fetch latest timestamp metadata for the current source.
-    // On success: updates state.timestamp and state.timestamp_str.
-    bool fetch_latest_timestamp();
+    // Fetch timestamps for the current source into state.frame_timestamps.
+    // latest-N mode: uses latest_times.json
+    // range mode:    uses YYYYMMDD_by_hour.json for each day in range
+    bool fetch_timestamps();
 
-    // Reload: clear tiles, set new source on TileManager, fetch timestamp.
+    // Full reload: fetch timestamps, load frames into TileManager + AnimController
     void reload_source();
 
-    // GLFW callbacks
-    static void cb_resize      (GLFWwindow*, int w, int h);
-    static void cb_scroll      (GLFWwindow*, double dx, double dy);
-    static void cb_mouse_button(GLFWwindow*, int btn, int action, int mods);
-    static void cb_cursor_pos  (GLFWwindow*, double x, double y);
-    static void cb_key         (GLFWwindow*, int key, int scancode, int action, int mods);
+    // Apply state.frame_timestamps → AnimationController + TileManager
+    void apply_frames();
 
-    GLFWwindow* m_window{nullptr};
-    Renderer    m_renderer;
-    HttpClient  m_http;
-    TileManager m_tiles;
+    static void cb_resize      (GLFWwindow*, int, int);
+    static void cb_scroll      (GLFWwindow*, double, double);
+    static void cb_mouse_button(GLFWwindow*, int, int, int);
+    static void cb_cursor_pos  (GLFWwindow*, double, double);
+    static void cb_key         (GLFWwindow*, int, int, int, int);
+
+    GLFWwindow*          m_window{nullptr};
+    Renderer             m_renderer;
+    HttpClient           m_http;
+    TileManager          m_tiles;
+    AnimationController  m_anim;
 
     ViewState   m_state;
+    float       m_sidebar_w{300.0f};
 
-    float       m_sidebar_w{290.0f};
-
-    // Pan drag state
     bool      m_dragging{false};
     glm::vec2 m_drag_start_screen{};
     glm::vec2 m_drag_start_pan{};
