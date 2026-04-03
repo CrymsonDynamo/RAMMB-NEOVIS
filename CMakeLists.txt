@@ -1,0 +1,108 @@
+cmake_minimum_required(VERSION 3.24)
+project(stormview VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ── Dependencies via FetchContent ────────────────────────────────────────────
+include(FetchContent)
+
+# Dear ImGui
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.91.9
+    GIT_SHALLOW    TRUE)
+FetchContent_MakeAvailable(imgui)
+
+# stb (header-only)
+FetchContent_Declare(stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG        master
+    GIT_SHALLOW    TRUE)
+FetchContent_MakeAvailable(stb)
+
+# ── System dependencies (install via apt) ────────────────────────────────────
+find_package(OpenGL REQUIRED)
+find_package(GLEW   REQUIRED)
+find_package(glfw3  REQUIRED)
+find_package(CURL   REQUIRED)
+find_package(SQLite3 REQUIRED)
+
+# GLM (header-only, find manually if find_package fails)
+find_package(glm QUIET)
+if(NOT glm_FOUND)
+    find_path(GLM_INCLUDE_DIR glm/glm.hpp)
+endif()
+
+# nlohmann/json (header-only)
+find_package(nlohmann_json QUIET)
+if(NOT nlohmann_json_FOUND)
+    find_path(NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp)
+endif()
+
+# ── ImGui as a library target ────────────────────────────────────────────────
+add_library(imgui_lib STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+
+target_include_directories(imgui_lib PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends)
+
+target_link_libraries(imgui_lib PUBLIC glfw OpenGL::GL)
+
+# ── StormView executable ─────────────────────────────────────────────────────
+set(SOURCES
+    src/main.cpp
+    src/app.cpp
+    src/renderer/shader.cpp
+    src/renderer/renderer.cpp
+    src/network/http_client.cpp
+    src/stb_impl.cpp)
+
+add_executable(stormview ${SOURCES})
+
+target_include_directories(stormview PRIVATE
+    src
+    ${stb_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends)
+
+if(TARGET glm::glm)
+    target_link_libraries(stormview PRIVATE glm::glm)
+elseif(DEFINED GLM_INCLUDE_DIR)
+    target_include_directories(stormview PRIVATE ${GLM_INCLUDE_DIR})
+endif()
+
+if(TARGET nlohmann_json::nlohmann_json)
+    target_link_libraries(stormview PRIVATE nlohmann_json::nlohmann_json)
+elseif(DEFINED NLOHMANN_JSON_INCLUDE_DIR)
+    target_include_directories(stormview PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
+endif()
+
+target_link_libraries(stormview PRIVATE
+    OpenGL::GL
+    GLEW::GLEW
+    glfw
+    CURL::libcurl
+    SQLite::SQLite3
+    imgui_lib)
+
+# Copy shaders next to the binary after build
+add_custom_command(TARGET stormview POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/shaders
+        $<TARGET_FILE_DIR:stormview>/shaders
+    COMMENT "Copying shaders")
+
+# ── Compiler flags ───────────────────────────────────────────────────────────
+if(MSVC)
+    target_compile_options(stormview PRIVATE /W4 /WX-)
+else()
+    target_compile_options(stormview PRIVATE -Wall -Wextra -Wpedantic)
+endif()
