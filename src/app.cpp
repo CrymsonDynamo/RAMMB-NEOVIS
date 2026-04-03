@@ -120,6 +120,9 @@ void App::update() {
         m_state.refresh_request = false;
     }
 
+    // Apply throttle setting every frame (atomic, zero cost if unchanged)
+    m_tiles.set_throttle(m_state.download_limit_kbps);
+
     // Update TileManager: compute visible viewport in world space
     int win_w = 1, win_h = 1;
     glfwGetFramebufferSize(m_window, &win_w, &win_h);
@@ -146,13 +149,15 @@ void App::render() {
 
     m_sidebar_w = sidebar_draw(m_state, float(win_h));
 
-    // ── Status bar at bottom of viewport ─────────────────────────────────────
-    float vp_left = m_sidebar_w;
-    float vp_w    = float(win_w) - vp_left;
+    // ── Status / progress bar at bottom of viewport ───────────────────────────
+    float vp_left   = m_sidebar_w;
+    float vp_w      = float(win_w) - vp_left;
+    float bar_h     = 38.0f;
 
-    ImGui::SetNextWindowPos ({ vp_left, float(win_h) - 26.0f });
-    ImGui::SetNextWindowSize({ vp_w,    26.0f });
-    ImGui::SetNextWindowBgAlpha(0.75f);
+    ImGui::SetNextWindowPos ({ vp_left, float(win_h) - bar_h });
+    ImGui::SetNextWindowSize({ vp_w,    bar_h });
+    ImGui::SetNextWindowBgAlpha(0.82f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 8.0f, 4.0f });
     ImGui::Begin("##status", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
         ImGuiWindowFlags_NoNav        | ImGuiWindowFlags_NoMove   |
@@ -160,18 +165,38 @@ void App::render() {
 
     int pending = m_tiles.pending_downloads();
     int loaded  = m_tiles.loaded_tiles();
-    int total   = 1 << (2 * m_state.data_zoom); // N² tiles at zoom N
+    int total   = m_tiles.total_tiles();
 
-    if (pending > 0)
-        ImGui::Text("  Downloading... %d / %d tiles  |  zoom %.2fx  |  pan %.3f, %.3f",
-            loaded, total, m_renderer.zoom(),
-            m_renderer.pan().x, m_renderer.pan().y);
-    else
-        ImGui::Text("  %d tiles loaded  |  zoom %.2fx  |  pan %.3f, %.3f  |  scroll=zoom  drag=pan  R=refresh",
-            loaded, m_renderer.zoom(),
-            m_renderer.pan().x, m_renderer.pan().y);
+    bool downloading = (pending > 0);
+    float fraction   = (total > 0) ? std::clamp(float(loaded) / float(total), 0.0f, 1.0f) : 1.0f;
+
+    // Left: info text
+    if (downloading) {
+        ImGui::TextColored({ 0.3f, 0.8f, 1.0f, 1.0f }, "Downloading");
+        ImGui::SameLine();
+        ImGui::Text("%d / %d tiles", loaded, total);
+    } else {
+        ImGui::TextColored({ 0.2f, 0.85f, 0.4f, 1.0f }, "Ready");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%d tiles  |  scroll=zoom  drag=pan  Home=reset  R=refresh", loaded);
+    }
+
+    // Right: zoom + pan
+    ImGui::SameLine(vp_w - 200.0f);
+    ImGui::TextDisabled("zoom %.2fx  pan %.2f, %.2f",
+        m_renderer.zoom(), m_renderer.pan().x, m_renderer.pan().y);
+
+    // Progress bar (full width, slim, below the text)
+    if (downloading || fraction < 1.0f) {
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 2.0f);
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, { 0.20f, 0.60f, 1.00f, 1.0f });
+        ImGui::PushStyleColor(ImGuiCol_FrameBg,       { 0.10f, 0.10f, 0.14f, 1.0f });
+        ImGui::ProgressBar(fraction, { vp_w - 16.0f, 4.0f }, "");
+        ImGui::PopStyleColor(2);
+    }
 
     ImGui::End();
+    ImGui::PopStyleVar();
 
     // ── 3D render pass ────────────────────────────────────────────────────────
     // Scissor/viewport restricted to right of sidebar

@@ -24,6 +24,12 @@ struct ViewState {
     bool  playing     = false;
     float speed       = 1.0f; // playback speed multiplier
 
+    // ── Settings ──────────────────────────────────────────────────────────────
+    // Download speed limit in KB/s. 0 = unlimited.
+    int download_limit_kbps = 0;
+    // Number of concurrent download threads (1-32)
+    int download_threads = 16;
+
     // ── Dirty flags (cleared by app after handling) ───────────────────────────
     bool source_changed   = false;  // sat/sector/product changed
     bool zoom_changed     = false;  // data_zoom changed

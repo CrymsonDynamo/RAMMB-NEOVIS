@@ -16,7 +16,7 @@ static size_t write_cb(void* data, size_t size, size_t nmemb, void* user) {
     return n;
 }
 
-static bool http_get(const std::string& url, std::vector<uint8_t>& out) {
+static bool http_get(const std::string& url, std::vector<uint8_t>& out, int limit_kbps = 0) {
     CURL* c = curl_easy_init();
     if (!c) return false;
 
@@ -28,6 +28,10 @@ static bool http_get(const std::string& url, std::vector<uint8_t>& out) {
     curl_easy_setopt(c, CURLOPT_TIMEOUT,        20L);
     curl_easy_setopt(c, CURLOPT_USERAGENT,      "StormView/0.1");
     curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING,"");
+
+    if (limit_kbps > 0)
+        curl_easy_setopt(c, CURLOPT_MAX_RECV_SPEED_LARGE,
+                         curl_off_t(limit_kbps) * 1024);
 
     CURLcode res = curl_easy_perform(c);
     long     code= 0;
@@ -49,11 +53,13 @@ void TileManager::set_source(const std::string& satellite,
                               const std::string& product,
                               int64_t            timestamp,
                               int                data_zoom) {
-    m_satellite = satellite;
-    m_sector    = sector;
-    m_product   = product;
-    m_timestamp = timestamp;
-    m_data_zoom = data_zoom;
+    m_satellite   = satellite;
+    m_sector      = sector;
+    m_product     = product;
+    m_timestamp   = timestamp;
+    m_data_zoom   = data_zoom;
+    int N         = 1 << data_zoom;
+    m_total_tiles = N * N;
 }
 
 void TileManager::clear(Renderer& renderer) {
@@ -128,12 +134,13 @@ void TileManager::queue_tile(const TileKey& key) {
     // Capture everything needed by value into the lambda (no 'this' members via ref)
     TileKey captured_key = key;
 
-    m_pool.enqueue([this, url, captured_key]() mutable {
+    int limit = m_limit_kbps.load();
+    m_pool.enqueue([this, url, captured_key, limit]() mutable {
         DownloadResult res;
         res.key = captured_key;
 
         std::vector<uint8_t> png_buf;
-        if (!http_get(url, png_buf)) {
+        if (!http_get(url, png_buf, limit)) {
             res.ok = false;
             std::lock_guard lock(m_result_mutex);
             m_results.push_back(std::move(res));

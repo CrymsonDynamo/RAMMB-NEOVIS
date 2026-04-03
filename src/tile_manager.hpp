@@ -9,6 +9,7 @@
 
 #include "renderer/renderer.hpp"
 #include "thread_pool.hpp"
+#include <atomic>
 
 // ── TileKey ───────────────────────────────────────────────────────────────────
 
@@ -58,8 +59,12 @@ public:
     // Clear all tiles (e.g. on source change)
     void clear(Renderer& renderer);
 
+    // Set download speed cap. limit_kbps=0 means unlimited.
+    void set_throttle(int limit_kbps) { m_limit_kbps.store(limit_kbps); }
+
     int pending_downloads() const { return m_pool.pending(); }
     int loaded_tiles()      const { return int(m_tiles.size()); }
+    int total_tiles()       const { return m_total_tiles; }
 
 private:
     struct TileEntry {
@@ -93,6 +98,9 @@ private:
     // Thread-safe result queue posted by worker threads
     std::mutex                   m_result_mutex;
     std::vector<DownloadResult>  m_results;
+
+    std::atomic<int> m_limit_kbps{0}; // 0 = unlimited
+    int              m_total_tiles{1}; // expected tile count at current zoom
 
     ThreadPool m_pool;
 };
