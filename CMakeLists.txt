@@ -29,6 +29,13 @@ find_package(glfw3  REQUIRED)
 find_package(CURL   REQUIRED)
 find_package(SQLite3 REQUIRED)
 
+# FFmpeg (libav*)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(AVCODEC  REQUIRED libavcodec)
+pkg_check_modules(AVFORMAT REQUIRED libavformat)
+pkg_check_modules(AVUTIL   REQUIRED libavutil)
+pkg_check_modules(SWSCALE  REQUIRED libswscale)
+
 # GLM (header-only, find manually if find_package fails)
 find_package(glm QUIET)
 if(NOT glm_FOUND)
@@ -67,6 +74,8 @@ set(SOURCES
     src/tile_manager.cpp
     src/ui/sidebar.cpp
     src/ui/timeline.cpp
+    src/ui/export_panel.cpp
+    src/export/exporter.cpp
     src/stb_impl.cpp)
 
 add_executable(stormview ${SOURCES})
@@ -89,13 +98,23 @@ elseif(DEFINED NLOHMANN_JSON_INCLUDE_DIR)
     target_include_directories(stormview PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
 endif()
 
+target_include_directories(stormview PRIVATE
+    ${AVCODEC_INCLUDE_DIRS}
+    ${AVFORMAT_INCLUDE_DIRS}
+    ${AVUTIL_INCLUDE_DIRS}
+    ${SWSCALE_INCLUDE_DIRS})
+
 target_link_libraries(stormview PRIVATE
     OpenGL::GL
     GLEW::GLEW
     glfw
     CURL::libcurl
     SQLite::SQLite3
-    imgui_lib)
+    imgui_lib
+    ${AVCODEC_LIBRARIES}
+    ${AVFORMAT_LIBRARIES}
+    ${AVUTIL_LIBRARIES}
+    ${SWSCALE_LIBRARIES})
 
 # Copy shaders next to the binary after build
 add_custom_command(TARGET stormview POST_BUILD

@@ -364,10 +364,15 @@ float sidebar_draw(ViewState& state, float window_height) {
     if (ImGui::Button("Refresh", { (SIDEBAR_W - 20.0f) * 0.5f, 0 }))
         state.refresh_request = true;
     ImGui::SameLine(0, 4);
-    if (ImGui::Button("Reset View", { (SIDEBAR_W - 20.0f) * 0.5f, 0 })) {
-        // Handled by App via key Home - set flag via refresh for now
-        // (App checks this from keyboard anyway)
-    }
+    if (ImGui::Button("Reset View", { (SIDEBAR_W - 20.0f) * 0.5f, 0 }))
+        state.refresh_request = false; // placeholder; Home key handles it
+
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Button,        { 0.15f, 0.50f, 0.15f, 1.0f });
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, { 0.20f, 0.70f, 0.20f, 1.0f });
+    if (ImGui::Button("Export...", { SIDEBAR_W - 16.0f, 24.0f }))
+        state.export_requested = true;
+    ImGui::PopStyleColor(2);
 
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 

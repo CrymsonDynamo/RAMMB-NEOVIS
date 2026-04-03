@@ -10,6 +10,8 @@
 #include "tile_manager.hpp"
 #include "animation.hpp"
 #include "ui/sidebar.hpp"
+#include "ui/export_panel.hpp"
+#include "export/exporter.hpp"
 
 class App {
 public:
@@ -42,14 +44,19 @@ private:
     static void cb_cursor_pos  (GLFWwindow*, double, double);
     static void cb_key         (GLFWwindow*, int, int, int, int);
 
+    // world_to_screen: inverse of Renderer::screen_to_world, needed for export overlay
+    glm::vec2 world_to_screen(glm::vec2 world) const;
+
     GLFWwindow*          m_window{nullptr};
     Renderer             m_renderer;
     HttpClient           m_http;
     TileManager          m_tiles;
     AnimationController  m_anim;
+    Exporter             m_exporter;
 
-    ViewState   m_state;
-    float       m_sidebar_w{300.0f};
+    ViewState    m_state;
+    ExportState  m_export_state;
+    float        m_sidebar_w{300.0f};
 
     bool      m_dragging{false};
     glm::vec2 m_drag_start_screen{};

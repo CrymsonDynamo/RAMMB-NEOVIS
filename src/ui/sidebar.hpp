@@ -46,6 +46,7 @@ struct ViewState {
     bool zoom_changed     = false;
     bool refresh_request  = false;
     bool range_changed    = false;  // date range or num_frames changed
+    bool export_requested = false;  // user clicked Export button
 };
 
 // Draws the left sidebar and updates state. Returns sidebar pixel width.

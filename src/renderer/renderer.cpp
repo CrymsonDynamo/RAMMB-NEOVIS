@@ -132,6 +132,95 @@ glm::mat4 Renderer::compute_mvp(const TileQuad& quad) const {
     return proj * model;
 }
 
+bool Renderer::render_offscreen(const std::vector<std::pair<GLuint, TileQuad>>& tiles,
+                                float crop_x_min, float crop_x_max,
+                                float crop_y_min, float crop_y_max,
+                                int   out_w,      int   out_h,
+                                OffscreenResult&  out) {
+    // Save current viewport state
+    GLint prev_vp[4];
+    glGetIntegerv(GL_VIEWPORT, prev_vp);
+    GLint prev_fbo;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+
+    // Create FBO + texture + depth renderbuffer
+    GLuint fbo = 0, color_tex = 0, rbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    glGenTextures(1, &color_tex);
+    glBindTexture(GL_TEXTURE_2D, color_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, out_w, out_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color_tex, 0);
+
+    glGenRenderbuffers(1, &rbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, out_w, out_h);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rbo);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &color_tex);
+        glDeleteRenderbuffers(1, &rbo);
+        return false;
+    }
+
+    // Render into FBO using crop region as the ortho projection
+    glViewport(0, 0, out_w, out_h);
+    glClearColor(0.05f, 0.05f, 0.08f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    float saved_pan_x = m_pan.x, saved_pan_y = m_pan.y;
+    float saved_zoom  = m_zoom;
+    int   saved_vp_x  = m_vp_x, saved_vp_y = m_vp_y;
+    int   saved_vp_w  = m_vp_w, saved_vp_h = m_vp_h;
+
+    // Override camera to match crop region exactly
+    m_pan.x  = (crop_x_min + crop_x_max) * 0.5f;
+    m_pan.y  = (crop_y_min + crop_y_max) * 0.5f;
+    m_aspect = float(out_w) / float(out_h);
+    // Zoom such that crop_h fills the viewport vertically
+    float crop_h = crop_y_max - crop_y_min;
+    float crop_w = crop_x_max - crop_x_min;
+    // Use the tighter constraint so the crop fits exactly
+    float zoom_from_h = 1.0f / crop_h;
+    float zoom_from_w = (1.0f / crop_w) * m_aspect; // convert world-w to zoom
+    m_zoom = std::min(zoom_from_h, zoom_from_w);
+    m_vp_x = 0; m_vp_y = 0; m_vp_w = out_w; m_vp_h = out_h;
+
+    for (const auto& [tex, quad] : tiles)
+        draw_tile(tex, quad);
+
+    // Readback (OpenGL is bottom-up, flip to top-down)
+    std::vector<uint8_t> raw(out_w * out_h * 4);
+    glReadPixels(0, 0, out_w, out_h, GL_RGBA, GL_UNSIGNED_BYTE, raw.data());
+
+    out.rgba.resize(out_w * out_h * 4);
+    out.width  = out_w;
+    out.height = out_h;
+    for (int row = 0; row < out_h; ++row)
+        memcpy(out.rgba.data() + row * out_w * 4,
+               raw.data() + (out_h - 1 - row) * out_w * 4,
+               out_w * 4);
+
+    // Restore state
+    m_pan.x = saved_pan_x; m_pan.y = saved_pan_y;
+    m_zoom  = saved_zoom;
+    m_vp_x  = saved_vp_x;  m_vp_y = saved_vp_y;
+    m_vp_w  = saved_vp_w;  m_vp_h = saved_vp_h;
+    m_aspect = float(m_vp_w) / float(m_vp_h);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);
+    glViewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color_tex);
+    glDeleteRenderbuffers(1, &rbo);
+    return true;
+}
+
 glm::vec2 Renderer::screen_to_world(glm::vec2 screen_px) const {
     // Offset by viewport origin, then normalize to [-1,1] within viewport
     float nx =  ((screen_px.x - m_vp_x) / m_vp_w) * 2.0f - 1.0f;

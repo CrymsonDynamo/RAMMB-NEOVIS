@@ -16,6 +16,29 @@ using json = nlohmann::json;
 
 static constexpr const char* BASE_DATA = "https://slider.cira.colostate.edu/data";
 
+// ── world_to_screen ───────────────────────────────────────────────────────────
+// Inverse of Renderer::screen_to_world, using the current viewport.
+// Used by the export crop overlay.
+glm::vec2 App::world_to_screen(glm::vec2 world) const {
+    // From renderer internals: nx = ((sx - vp_x)/vp_w)*2-1, ny = -((sy-vp_y)/vp_h)*2+1
+    // world.x = pan.x + nx*half_w  →  nx = (world.x - pan.x) / half_w
+    int win_w = 1, win_h = 1;
+    glfwGetFramebufferSize(m_window, &win_w, &win_h);
+    float vp_w   = float(win_w) - m_sidebar_w;
+    float aspect = vp_w / float(win_h);
+    float half_h = 0.5f / m_renderer.zoom();
+    float half_w = half_h * aspect;
+
+    glm::vec2 pan = m_renderer.pan();
+    float nx =  (world.x - pan.x) / half_w;
+    float ny = -(world.y - pan.y) / half_h;
+
+    // vp_x is sidebar_w, vp_y is 0 (top of viewport, OpenGL flips handled)
+    float sx = m_sidebar_w + (nx + 1.0f) * 0.5f * vp_w;
+    float sy = (ny + 1.0f) * 0.5f * float(win_h);
+    return { sx, sy };
+}
+
 // ── Timestamp utilities ───────────────────────────────────────────────────────
 
 static std::string ts_to_display(int64_t ts) {
@@ -116,6 +139,13 @@ void App::run() {
 // ── Per-frame ────────────────────────────────────────────────────────────────
 
 void App::update(float dt) {
+    // ── Export button ─────────────────────────────────────────────────────────
+    if (m_state.export_requested) {
+        m_state.export_requested = false;
+        m_export_state.open = true;
+        m_export_state.crop = { -0.5f, 0.5f, -0.5f, 0.5f }; // default: full image
+    }
+
     // ── Handle sidebar dirty flags ────────────────────────────────────────────
     if (m_state.source_changed || m_state.refresh_request || m_state.range_changed) {
         reload_source();
@@ -232,6 +262,50 @@ void App::render() {
 
     ImGui::End();
     ImGui::PopStyleVar();
+
+    // ── Export panel + crop overlay ───────────────────────────────────────────
+    if (m_export_state.open) {
+        float render_vp_y = 0.0f; // top of viewport in screen coords
+        float render_vp_h = float(win_h) - bottom_h;
+
+        auto s2w = [this](glm::vec2 sp) { return m_renderer.screen_to_world(sp); };
+        auto w2s = [this](glm::vec2 wp) { return world_to_screen(wp); };
+
+        bool triggered = export_panel_draw(
+            m_export_state,
+            m_sidebar_w, render_vp_y, vp_w, render_vp_h,
+            int(m_state.frame_timestamps.size()),
+            s2w, w2s);
+
+        if (triggered && !m_exporter.running()) {
+            // Build frames: render each frame offscreen
+            auto prog = std::make_shared<ExportProgress>();
+            m_export_state.progress = prog;
+
+            int N = int(m_state.frame_timestamps.size());
+            int ow = m_export_state.settings.out_width;
+            int oh = m_export_state.settings.out_height;
+            CropRegion cr = m_export_state.crop;
+
+            std::vector<ExportFrame> frames;
+            frames.reserve(N);
+            for (int fi = 0; fi < N; ++fi) {
+                auto tile_list = m_tiles.ready_tiles_for_frame(fi);
+                Renderer::OffscreenResult res;
+                if (m_renderer.render_offscreen(
+                        tile_list,
+                        cr.x_min, cr.x_max, cr.y_min, cr.y_max,
+                        ow, oh, res)) {
+                    ExportFrame ef;
+                    ef.rgba      = std::move(res.rgba);
+                    ef.timestamp = m_state.frame_timestamps[fi];
+                    frames.push_back(std::move(ef));
+                }
+            }
+
+            m_exporter.start(m_export_state.settings, std::move(frames), prog);
+        }
+    }
 
     // ── 3D tile render ────────────────────────────────────────────────────────
     int render_h = int(float(win_h) - bottom_h);

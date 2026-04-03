@@ -11,9 +11,14 @@ sudo apt-get install -y \
     nlohmann-json3-dev \
     libsqlite3-dev \
     libcurl4-openssl-dev \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
     build-essential \
     cmake \
-    git
+    git \
+    pkg-config
 
 echo "==> Configuring CMake build..."
 cmake -B build -DCMAKE_BUILD_TYPE=Release

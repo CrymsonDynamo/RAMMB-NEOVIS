@@ -1,6 +1,9 @@
 #pragma once
 #include <GL/glew.h>
 #include <glm/glm.hpp>
+#include <vector>
+#include <cstdint>
+#include <utility>
 #include "shader.hpp"
 
 // World space: the full satellite image occupies a unit square
@@ -35,7 +38,21 @@ public:
 
     void begin_frame();
     void draw_tile(GLuint texture, const TileQuad& quad, float opacity = 1.0f);
-    // end_frame is implicit – caller swaps buffers
+
+    // ── Offscreen rendering for export ───────────────────────────────────────
+    // Render a world-space crop region at the given pixel dimensions into an
+    // RGBA CPU buffer. Draws all tiles from the provided list.
+    // crop_* are world-space coordinates (same system as pan/zoom).
+    // Returns false if FBO setup fails.
+    struct OffscreenResult {
+        std::vector<uint8_t> rgba; // rows top-to-bottom
+        int width{}, height{};
+    };
+    bool render_offscreen(const std::vector<std::pair<GLuint, TileQuad>>& tiles,
+                          float crop_x_min, float crop_x_max,
+                          float crop_y_min, float crop_y_max,
+                          int   out_w,      int   out_h,
+                          OffscreenResult&  out);
 
     // Camera
     void      set_pan(glm::vec2 pan) { m_pan  = pan;  }

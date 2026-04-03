@@ -6,6 +6,7 @@
 #include <mutex>
 #include <cstdint>
 #include <atomic>
+#include <utility>
 
 #include "renderer/renderer.hpp"
 #include "thread_pool.hpp"
@@ -80,6 +81,9 @@ public:
     // How many tiles are loaded for a specific frame (for per-frame progress)
     int loaded_for_frame(int frame_idx) const;
 
+    // Return all ready (tex, quad) pairs for a frame — used by export
+    std::vector<std::pair<GLuint, TileQuad>> ready_tiles_for_frame(int frame_idx) const;
+
 private:
     struct TileEntry {
         GLuint tex    = 0;
@@ -95,9 +99,9 @@ private:
         bool                 ok{false};
     };
 
-    void queue_tile(const TileKey& key);
-    std::string build_url(const TileKey& key) const;
-    TileQuad    tile_quad(const TileKey& key) const;
+    void        queue_tile(const TileKey& key);
+    std::string build_url (const TileKey& key) const;
+    TileQuad    tile_quad (const TileKey& key) const;
 
     // Enqueue all visible tiles for a given frame at current viewport
     void request_frame(int frame_idx,

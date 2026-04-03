@@ -151,6 +151,16 @@ int TileManager::loaded_for_frame(int frame_idx) const {
     return count;
 }
 
+std::vector<std::pair<GLuint, TileQuad>> TileManager::ready_tiles_for_frame(int frame_idx) const {
+    std::vector<std::pair<GLuint, TileQuad>> out;
+    std::lock_guard lock(m_result_mutex);
+    for (auto& [key, entry] : m_tiles) {
+        if (key.frame_idx == frame_idx && entry.ready && entry.tex)
+            out.emplace_back(entry.tex, tile_quad(key));
+    }
+    return out;
+}
+
 void TileManager::queue_tile(const TileKey& key) {
     std::string url   = build_url(key);
     TileKey     ckey  = key;
