@@ -5,6 +5,7 @@
 #include <functional>
 #include <atomic>
 #include <thread>
+#include <memory>
 
 // Export format
 enum class ExportFormat { MP4, GIF, PNG_SEQUENCE };
@@ -69,7 +70,13 @@ public:
                std::shared_ptr<ExportProgress> progress);
 
     void cancel();
-    bool running() const { return m_thread.joinable(); }
+
+    // True only while export is actively running (not merely "thread not yet joined").
+    bool running() const {
+        return m_thread.joinable()
+            && m_progress
+            && m_progress->running.load();
+    }
 
 private:
     void run(ExportSettings settings,
@@ -80,6 +87,7 @@ private:
     bool write_gif     (const ExportSettings&, const std::vector<ExportFrame>&, ExportProgress&);
     bool write_png_seq (const ExportSettings&, const std::vector<ExportFrame>&, ExportProgress&);
 
-    std::thread         m_thread;
-    std::atomic<bool>   m_cancel{false};
+    std::thread                     m_thread;
+    std::atomic<bool>               m_cancel{false};
+    std::shared_ptr<ExportProgress> m_progress;   // held so we can check finished state
 };

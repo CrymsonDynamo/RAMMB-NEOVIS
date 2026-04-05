@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=RAMMB-NEOVIS
+Comment=Native satellite imagery viewer
+Exec=rammb-neovis
+Icon=rammb-neovis
+Terminal=false
+Type=Application
+Categories=Science;Geography;
+Keywords=satellite;weather;GOES;RAMMB;imagery;
+StartupNotify=true

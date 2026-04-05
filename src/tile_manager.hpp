@@ -36,7 +36,7 @@ struct TileKeyHash {
 
 class TileManager {
 public:
-    explicit TileManager(int n_threads = 16);
+    explicit TileManager(int n_threads = 4);
     ~TileManager();
 
     TileManager(const TileManager&) = delete;
@@ -57,11 +57,16 @@ public:
                     int                data_zoom);
 
     // Call every frame: uploads ready tiles, queues visible tile fetches.
-    // current_frame is prioritized; adjacent frames are background-loaded.
+    // current_frame is prioritized; all other frames are background-loaded.
     void update(float vp_x_min, float vp_x_max,
                 float vp_y_min, float vp_y_max,
                 int   current_frame,
                 Renderer& renderer);
+
+    // Eagerly enqueue all tiles for all frames at full-image bounds.
+    // Call once after set_frames() to kick off downloads immediately,
+    // regardless of current viewport position.
+    void prefetch_all();
 
     // Draw loaded tiles for the given frame
     void draw(int frame_idx, Renderer& renderer);
@@ -69,12 +74,22 @@ public:
     // Free all GPU textures and clear tile map
     void clear(Renderer& renderer);
 
+    // Set tile selection mask. When non-empty, only tiles where mask[row*T+col]
+    // is true will be downloaded. Pass empty vector to download all tiles.
+    void set_tile_selection(const std::vector<bool>& sel) { m_tile_selection = sel; }
+
+    // Pause / resume tile downloads (workers finish current task then stop)
+    void pause_downloads()  { m_pool.pause();  }
+    void resume_downloads() { m_pool.resume(); }
+    bool downloads_paused() const { return m_pool.paused(); }
+
     // Download speed cap (0 = unlimited, hot-swappable)
     void set_throttle(int limit_kbps) { m_limit_kbps.store(limit_kbps); }
 
     // Stats
     int pending_downloads()  const { return m_pool.pending(); }
     int loaded_tiles()       const { return m_loaded_count.load(); }
+    int failed_tiles()       const { return m_failed_count.load(); }
     int total_tiles()        const { return m_total_tiles; }
     int frame_count()        const { return int(m_timestamps.size()); }
 
@@ -97,6 +112,7 @@ private:
         std::vector<uint8_t> rgba;
         int                  width{}, height{};
         bool                 ok{false};
+        uint32_t             generation{0}; // discard if != current generation
     };
 
     void        queue_tile(const TileKey& key);
@@ -122,9 +138,13 @@ private:
     mutable std::mutex           m_result_mutex;
     std::vector<DownloadResult>  m_results;
 
-    std::atomic<int> m_limit_kbps  {0};
-    std::atomic<int> m_loaded_count {0};
-    int              m_total_tiles  {1};
+    std::vector<bool>     m_tile_selection; // empty = all tiles, else mask[row*T+col]
+
+    std::atomic<int>      m_limit_kbps   {0};
+    std::atomic<int>      m_loaded_count {0};
+    std::atomic<int>      m_failed_count {0};
+    int                   m_total_tiles  {1};
+    std::atomic<uint32_t> m_generation   {0}; // bumped on clear() to discard stale results
 
     ThreadPool m_pool;
 };

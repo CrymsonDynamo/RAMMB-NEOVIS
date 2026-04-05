@@ -6,6 +6,19 @@
 #include <algorithm>
 
 // ── libcurl helper ────────────────────────────────────────────────────────────
+//
+// IMPORTANT: We use ONE persistent CURL handle per worker thread (thread_local).
+// Previously the code called curl_easy_init()/curl_easy_cleanup() for every
+// tile download, which:
+//   1. Opened a brand-new TCP connection per tile (no HTTP keep-alive)
+//   2. Left each closed socket in TIME_WAIT for ~60s
+//   3. With 16 threads × many tiles, exhausted OS ephemeral ports and
+//      overwhelmed the NIC — killing the host's internet connectivity.
+//
+// With thread-local handles, each worker thread reuses one long-lived connection
+// to slider.cira.colostate.edu. libcurl handles HTTP keep-alive automatically.
+// The total number of concurrent TCP connections equals the thread count (≤4 by
+// default), instead of potentially hundreds of short-lived ones.
 
 static size_t write_cb(void* data, size_t size, size_t nmemb, void* user) {
     auto* vec = static_cast<std::vector<uint8_t>*>(user);
@@ -15,25 +28,44 @@ static size_t write_cb(void* data, size_t size, size_t nmemb, void* user) {
     return n;
 }
 
+namespace {
+    struct CurlHandleGuard {
+        CURL* h;
+        CurlHandleGuard() : h(curl_easy_init()) {
+            if (!h) return;
+            // Persistent options — survive between requests on this handle
+            curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION,      1L);
+            curl_easy_setopt(h, CURLOPT_USERAGENT,           "RAMMB-NEOVIS/0.1");
+            curl_easy_setopt(h, CURLOPT_ACCEPT_ENCODING,     "");      // accept gzip
+            curl_easy_setopt(h, CURLOPT_TIMEOUT,             20L);     // 20s total
+            curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT,      8L);      // 8s connect
+            curl_easy_setopt(h, CURLOPT_TCP_KEEPALIVE,       1L);      // keep-alive
+            curl_easy_setopt(h, CURLOPT_TCP_KEEPIDLE,        30L);     // probe after 30s idle
+            curl_easy_setopt(h, CURLOPT_DNS_CACHE_TIMEOUT,   120L);    // cache DNS 2 min
+        }
+        ~CurlHandleGuard() { if (h) curl_easy_cleanup(h); }
+        CurlHandleGuard(const CurlHandleGuard&) = delete;
+        CurlHandleGuard& operator=(const CurlHandleGuard&) = delete;
+    };
+} // namespace
+
 static bool http_get(const std::string& url, std::vector<uint8_t>& out, int limit_kbps = 0) {
-    CURL* c = curl_easy_init();
+    thread_local CurlHandleGuard tl; // one handle per worker thread, lives until thread exits
+    CURL* c = tl.h;
     if (!c) return false;
 
     out.clear();
-    curl_easy_setopt(c, CURLOPT_URL,             url.c_str());
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION,   write_cb);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA,       &out);
-    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION,  1L);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT,         20L);
-    curl_easy_setopt(c, CURLOPT_USERAGENT,       "StormView/0.1");
-    curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");
-    if (limit_kbps > 0)
-        curl_easy_setopt(c, CURLOPT_MAX_RECV_SPEED_LARGE, curl_off_t(limit_kbps) * 1024);
+    // Per-request options (only what changes between calls)
+    curl_easy_setopt(c, CURLOPT_URL,                   url.c_str());
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION,         write_cb);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA,             &out);
+    curl_easy_setopt(c, CURLOPT_MAX_RECV_SPEED_LARGE,
+                     limit_kbps > 0 ? curl_off_t(limit_kbps) * 1024 : curl_off_t(0));
 
     CURLcode res  = curl_easy_perform(c);
     long     code = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
-    curl_easy_cleanup(c);
+    // Do NOT call curl_easy_cleanup — handle is reused for next tile on this thread
     return (res == CURLE_OK && code == 200);
 }
 
@@ -53,8 +85,9 @@ void TileManager::set_frames(const std::string& satellite,
     m_timestamps = timestamps;
     m_data_zoom  = data_zoom;
 
-    int N        = 1 << data_zoom;
-    // total tiles = all frames × tiles per frame
+    int N = 1 << data_zoom;
+    // total_tiles is recomputed in update() once the selection mask is known;
+    // initialise to full grid for now.
     m_total_tiles = N * N * std::max(1, int(timestamps.size()));
     m_loaded_count.store(0);
 }
@@ -68,10 +101,19 @@ void TileManager::set_source(const std::string& satellite,
 }
 
 void TileManager::clear(Renderer& renderer) {
+    // Drop queued-but-not-started tile downloads immediately.
+    // Without this, switching products leaves hundreds of stale tasks in the
+    // pool that block new tiles from downloading → blank screen.
+    m_pool.clear_queue();
+
+    // Bump generation so any in-flight results from old source are discarded.
+    m_generation.fetch_add(1);
+
     for (auto& [k, e] : m_tiles)
         if (e.tex) renderer.free_texture(e.tex);
     m_tiles.clear();
     m_loaded_count.store(0);
+    m_failed_count.store(0);
 
     std::lock_guard lock(m_result_mutex);
     m_results.clear();
@@ -89,9 +131,11 @@ void TileManager::update(float vp_x_min, float vp_x_max,
             std::swap(ready, m_results);
         }
         for (auto& r : ready) {
+            // Discard results from a previous source generation
+            if (r.generation != m_generation.load()) continue;
             auto it = m_tiles.find(r.key);
             if (it == m_tiles.end()) continue;
-            if (!r.ok) { it->second.failed = true; continue; }
+            if (!r.ok) { it->second.failed = true; m_failed_count.fetch_add(1); continue; }
             it->second.tex   = renderer.upload_texture(r.rgba.data(), r.width, r.height);
             it->second.ready = true;
             m_loaded_count.fetch_add(1);
@@ -102,11 +146,27 @@ void TileManager::update(float vp_x_min, float vp_x_max,
 
     int N = int(m_timestamps.size());
 
-    // Priority 1: current frame (all visible tiles)
+    // Recompute total_tiles to reflect only the selected tiles so the progress
+    // bar shows "9/9 ready" instead of "9/20 ready" when a mask is active.
+    {
+        int T = 1 << m_data_zoom;
+        bool has_mask = (int(m_tile_selection.size()) == T * T);
+        int sel_per_frame = T * T;
+        if (has_mask) {
+            sel_per_frame = 0;
+            for (int i = 0; i < T * T; ++i)
+                if (m_tile_selection[i]) ++sel_per_frame;
+        }
+        m_total_tiles = std::max(1, sel_per_frame * N);
+    }
+
+    // Priority 1: current frame — enqueued first so its tiles download soonest
     request_frame(current_frame, vp_x_min, vp_x_max, vp_y_min, vp_y_max);
 
-    // Priority 2: next 3 frames (background prefetch for smooth playback)
-    for (int i = 1; i <= 3 && i < N; ++i)
+    // Priority 2: all remaining frames, in playback order.
+    // Once a tile is marked queued it won't be re-enqueued, so this is cheap
+    // on subsequent frames. Tiles stay queued until the source changes.
+    for (int i = 1; i < N; ++i)
         request_frame((current_frame + i) % N, vp_x_min, vp_x_max, vp_y_min, vp_y_max);
 }
 
@@ -114,8 +174,14 @@ void TileManager::request_frame(int frame_idx,
                                 float vp_x_min, float vp_x_max,
                                 float vp_y_min, float vp_y_max) {
     int T = 1 << m_data_zoom;
+    bool has_mask = (int(m_tile_selection.size()) == T * T);
+
     for (int r = 0; r < T; ++r) {
         for (int c = 0; c < T; ++c) {
+            // Skip tiles deselected in the region selector
+            if (has_mask && !m_tile_selection[r * T + c])
+                continue;
+
             float tx_min = float(c)     / float(T) - 0.5f;
             float tx_max = float(c + 1) / float(T) - 0.5f;
             float ty_min = 0.5f - float(r + 1) / float(T);
@@ -133,6 +199,13 @@ void TileManager::request_frame(int frame_idx,
             }
         }
     }
+}
+
+void TileManager::prefetch_all() {
+    int N = int(m_timestamps.size());
+    // Use full-image world bounds so all tiles are queued regardless of viewport
+    for (int fi = 0; fi < N; ++fi)
+        request_frame(fi, -0.5f, 0.5f, -0.5f, 0.5f);
 }
 
 void TileManager::draw(int frame_idx, Renderer& renderer) {
@@ -165,10 +238,15 @@ void TileManager::queue_tile(const TileKey& key) {
     std::string url   = build_url(key);
     TileKey     ckey  = key;
     int         limit = m_limit_kbps.load();
+    uint32_t    gen   = m_generation.load();
 
-    m_pool.enqueue([this, url, ckey, limit]() mutable {
+    m_pool.enqueue([this, url, ckey, limit, gen]() mutable {
+        // Early-out: if generation changed, source was switched — discard work
+        if (gen != m_generation.load()) return;
+
         DownloadResult res;
-        res.key = ckey;
+        res.key        = ckey;
+        res.generation = gen;
 
         std::vector<uint8_t> png_buf;
         if (!http_get(url, png_buf, limit)) {

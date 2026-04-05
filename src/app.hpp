@@ -10,6 +10,7 @@
 #include "tile_manager.hpp"
 #include "animation.hpp"
 #include "ui/sidebar.hpp"
+#include "ui/scene_bar.hpp"
 #include "ui/export_panel.hpp"
 #include "export/exporter.hpp"
 
@@ -31,6 +32,9 @@ private:
     // latest-N mode: uses latest_times.json
     // range mode:    uses YYYYMMDD_by_hour.json for each day in range
     bool fetch_timestamps();
+
+    // Fetch all available timestamps for a single day from RAMMB API.
+    std::vector<int64_t> fetch_times_for_date(int year, int month, int day);
 
     // Full reload: fetch timestamps, load frames into TileManager + AnimController
     void reload_source();
@@ -55,9 +59,11 @@ private:
     Exporter             m_exporter;
 
     ViewState    m_state;
+    SceneBar     m_scene_bar;
     ExportState  m_export_state;
     float        m_sidebar_w{300.0f};
 
+    float     m_bar_h{30.0f};    // scene tab bar height, set each render()
     bool      m_dragging{false};
     glm::vec2 m_drag_start_screen{};
     glm::vec2 m_drag_start_pan{};

@@ -17,7 +17,7 @@ public:
                     {
                         std::unique_lock lock(m_mutex);
                         m_cv.wait(lock, [this] {
-                            return m_stop || !m_queue.empty();
+                            return m_stop || (!m_paused && !m_queue.empty());
                         });
                         if (m_stop && m_queue.empty()) return;
                         task = std::move(m_queue.front());
@@ -42,6 +42,19 @@ public:
         m_cv.notify_one();
     }
 
+    // Drop all queued-but-not-yet-started tasks.
+    void clear_queue() {
+        std::unique_lock lock(m_mutex);
+        int dropped = 0;
+        while (!m_queue.empty()) { m_queue.pop(); ++dropped; }
+        m_pending.fetch_sub(dropped);
+    }
+
+    // Pause: workers finish their current task then block until resumed.
+    void pause()  { std::unique_lock lock(m_mutex); m_paused = true;  }
+    void resume() { std::unique_lock lock(m_mutex); m_paused = false; m_cv.notify_all(); }
+    bool paused() const { return m_paused; }
+
     int pending() const { return m_pending.load(); }
 
 private:
@@ -51,4 +64,5 @@ private:
     std::condition_variable           m_cv;
     std::atomic<int>                  m_pending{0};
     bool                              m_stop{false};
+    bool                              m_paused{false};
 };

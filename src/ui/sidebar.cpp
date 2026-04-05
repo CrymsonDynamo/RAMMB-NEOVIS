@@ -4,6 +4,8 @@
 #include <imgui.h>
 #include <algorithm>
 #include <cstring>
+#include <ctime>
+#include <map>
 #include <format>
 
 static constexpr float SIDEBAR_W = 300.0f;
@@ -18,7 +20,109 @@ static const char* MONTH_NAMES[] = {
     "Jul","Aug","Sep","Oct","Nov","Dec"
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Calendar helpers ──────────────────────────────────────────────────────────
+
+// Returns the day-of-week (0=Sun..6=Sat) for the 1st of year/month.
+static int first_dow(int y, int m) {
+    struct tm t{}; t.tm_year = y - 1900; t.tm_mon = m - 1; t.tm_mday = 1;
+    mktime(&t); return t.tm_wday;
+}
+
+static int days_in_month(int y, int m) {
+    if (m == 2) return ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) ? 29 : 28;
+    static const int d[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    return d[m - 1];
+}
+
+// Per-popup calendar navigation state (keyed by id_prefix string).
+struct CalNavState { int year, month; };
+static std::map<std::string, CalNavState> s_cal_nav;
+
+// Draws an inline calendar popup. Call while inside a PushID block.
+// popup_id must match the ID passed to OpenPopup.
+// Returns true when a day was selected (year/month/day updated).
+static bool draw_calendar_popup(const char* popup_id, const char* map_key,
+                                int& year, int& month, int& day) {
+    bool changed = false;
+    if (!ImGui::BeginPopup(popup_id)) return false;
+
+    auto& nav = s_cal_nav[map_key];
+
+    constexpr float CELL   = 28.0f;
+    constexpr float BTN_H  = 20.0f;
+    constexpr float GAP    =  2.0f;
+    constexpr float GRID_W = CELL * 7.0f;
+
+    // ── Month / Year navigation header ───────────────────────────────────────
+    ImGui::SetNextItemWidth(GRID_W);
+
+    if (ImGui::ArrowButton("##cprev", ImGuiDir_Left)) {
+        if (--nav.month < 1) { nav.month = 12; --nav.year; }
+    }
+    ImGui::SameLine(0, 4);
+    // Centered month+year label
+    {
+        char hdr[32]; snprintf(hdr, sizeof(hdr), "%s %d", MONTH_NAMES[nav.month - 1], nav.year);
+        float tw = ImGui::CalcTextSize(hdr).x;
+        float cx = ImGui::GetCursorPosX();
+        ImGui::SetCursorPosX(cx + (GRID_W - 32.0f - tw) * 0.5f);
+        ImGui::Text("%s", hdr);
+    }
+    ImGui::SameLine(0, 4);
+    if (ImGui::ArrowButton("##cnext", ImGuiDir_Right)) {
+        if (++nav.month > 12) { nav.month = 1; ++nav.year; }
+    }
+
+    ImGui::Spacing();
+
+    // ── Day-of-week header ────────────────────────────────────────────────────
+    static const char* dn[] = {"Su","Mo","Tu","We","Th","Fr","Sa"};
+    float hx = ImGui::GetCursorPosX();
+    float hy = ImGui::GetCursorPosY();
+    for (int i = 0; i < 7; ++i) {
+        ImGui::SetCursorPos({ hx + i * CELL, hy });
+        ImGui::TextColored({ 0.55f, 0.55f, 0.55f, 1.0f }, "%s", dn[i]);
+    }
+    ImGui::SetCursorPosY(hy + ImGui::GetTextLineHeight() + GAP);
+
+    // ── Day grid ──────────────────────────────────────────────────────────────
+    int fdow = first_dow(nav.year, nav.month);
+    int dim  = days_in_month(nav.year, nav.month);
+    float gx = ImGui::GetCursorPosX();
+    float gy = ImGui::GetCursorPosY();
+
+    for (int d = 1; d <= dim; ++d) {
+        int cell_idx = fdow + d - 1;
+        int row = cell_idx / 7;
+        int col = cell_idx % 7;
+        ImGui::SetCursorPos({ gx + col * CELL, gy + row * (BTN_H + GAP) });
+
+        bool sel = (d == day && nav.month == month && nav.year == year);
+        if (sel) {
+            ImGui::PushStyleColor(ImGuiCol_Button,        { 0.15f, 0.45f, 0.80f, 1.0f });
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, { 0.20f, 0.60f, 1.00f, 1.0f });
+        }
+        ImGui::PushID(d);
+        char lbl[4]; snprintf(lbl, sizeof(lbl), "%d", d);
+        if (ImGui::Button(lbl, { CELL - GAP, BTN_H })) {
+            year = nav.year; month = nav.month; day = d;
+            changed = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopID();
+        if (sel) ImGui::PopStyleColor(2);
+    }
+
+    // Advance cursor past the grid
+    int total_rows = (fdow + dim + 6) / 7;
+    ImGui::SetCursorPosY(gy + total_rows * (BTN_H + GAP) + GAP);
+    ImGui::Spacing();
+
+    ImGui::EndPopup();
+    return changed;
+}
+
+// ── Other Helpers ─────────────────────────────────────────────────────────────
 
 // Returns true if any product in the category name-matches the filter.
 static bool category_matches(const ProductCategory& cat, const std::string& filter) {
@@ -39,14 +143,29 @@ static bool product_matches(const ProductDef& p, const std::string& filter) {
     return n.find(filter) != std::string::npos || id.find(filter) != std::string::npos;
 }
 
-// Compact date/time row: Month picker + day input + hour:min inputs
-static void date_time_row(const char* id_prefix,
-                          int& year, int& month, int& day,
-                          int& hour, int& min) {
+// Date-only row: calendar button + month/day/year.
+// Returns true if any date component changed (triggers time-list refetch).
+static bool date_row(const char* id_prefix, int& year, int& month, int& day) {
+    bool changed = false;
     ImGui::PushID(id_prefix);
 
+    int prev_year = year, prev_month = month, prev_day = day;
+
+    // Ensure nav state exists
+    if (s_cal_nav.find(id_prefix) == s_cal_nav.end())
+        s_cal_nav[id_prefix] = { year, month };
+
+    // Calendar popup button
+    if (ImGui::SmallButton("Cal")) {
+        s_cal_nav[id_prefix] = { year, month };
+        ImGui::OpenPopup("##calp");
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Open calendar picker");
+    ImGui::SameLine(0, 4);
+
     // Month dropdown
-    ImGui::SetNextItemWidth(56.0f);
+    ImGui::SetNextItemWidth(50.0f);
     if (ImGui::BeginCombo("##mo", MONTH_NAMES[std::clamp(month,1,12)-1])) {
         for (int m = 1; m <= 12; ++m) {
             bool sel = (month == m);
@@ -58,37 +177,83 @@ static void date_time_row(const char* id_prefix,
     ImGui::SameLine(0, 3);
 
     // Day
-    ImGui::SetNextItemWidth(36.0f);
+    ImGui::SetNextItemWidth(34.0f);
     ImGui::InputInt("##dy", &day, 0);
     day = std::clamp(day, 1, 31);
     ImGui::SameLine(0, 3);
 
     // Year
-    ImGui::SetNextItemWidth(56.0f);
+    ImGui::SetNextItemWidth(52.0f);
     ImGui::InputInt("##yr", &year, 0);
     year = std::clamp(year, 2017, 2099);
-    ImGui::SameLine(0, 3);
 
-    // Hour
-    ImGui::SetNextItemWidth(30.0f);
-    ImGui::InputInt("##hh", &hour, 0);
-    hour = std::clamp(hour, 0, 23);
-    ImGui::SameLine(0, 2);
-    ImGui::TextDisabled(":");
-    ImGui::SameLine(0, 2);
+    // Calendar popup
+    if (draw_calendar_popup("##calp", id_prefix, year, month, day))
+        changed = true;
 
-    // Minute
-    ImGui::SetNextItemWidth(30.0f);
-    ImGui::InputInt("##mn", &min, 0);
-    min = std::clamp(min, 0, 59);
+    if (year != prev_year || month != prev_month || day != prev_day)
+        changed = true;
+
+    ImGui::PopID();
+    return changed;
+}
+
+// Time dropdown populated from available timestamps fetched from API.
+// Falls back to manual HH:MM input when avail is empty (not yet fetched).
+static void time_selector(const char* id,
+                          const std::vector<int64_t>& avail,
+                          int& sel_idx, int& hour, int& min) {
+    ImGui::PushID(id);
+
+    if (avail.empty()) {
+        // Manual fallback
+        ImGui::SetNextItemWidth(28.0f);
+        ImGui::InputInt("##hh", &hour, 0);
+        hour = std::clamp(hour, 0, 23);
+        ImGui::SameLine(0, 2);
+        ImGui::TextDisabled(":");
+        ImGui::SameLine(0, 2);
+        ImGui::SetNextItemWidth(28.0f);
+        ImGui::InputInt("##mn", &min, 0);
+        min = std::clamp(min, 0, 59);
+        ImGui::SameLine(0, 4);
+        ImGui::TextColored(COL_DIM, "(loading...)");
+    } else {
+        sel_idx = std::clamp(sel_idx, 0, int(avail.size()) - 1);
+
+        // Format current selection label
+        std::string ts_s = std::to_string(avail[sel_idx]);
+        std::string cur_lbl = (ts_s.size() >= 12)
+            ? ts_s.substr(8, 2) + ":" + ts_s.substr(10, 2) + " UTC"
+            : "??:??";
+
+        ImGui::SetNextItemWidth(SIDEBAR_W - 80.0f);
+        if (ImGui::BeginCombo("##ts", cur_lbl.c_str())) {
+            for (int i = 0; i < int(avail.size()); ++i) {
+                std::string s = std::to_string(avail[i]);
+                if (s.size() < 12) continue;
+                char lbl[16];
+                snprintf(lbl, sizeof(lbl), "%c%c:%c%c UTC",
+                         s[8], s[9], s[10], s[11]);
+                bool is_sel = (i == sel_idx);
+                if (ImGui::Selectable(lbl, is_sel)) {
+                    sel_idx = i;
+                    hour = (s[8] - '0') * 10 + (s[9] - '0');
+                    min  = (s[10] - '0') * 10 + (s[11] - '0');
+                }
+                if (is_sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+    }
 
     ImGui::PopID();
 }
 
 // ── Main draw ─────────────────────────────────────────────────────────────────
 
-float sidebar_draw(ViewState& state, float window_height) {
-    ImGui::SetNextWindowPos({ 0.0f, 0.0f });
+float sidebar_draw(ViewState& state, float window_height, float y_offset) {
+    ImGui::SetNextWindowPos({ 0.0f, y_offset });
     ImGui::SetNextWindowSize({ SIDEBAR_W, window_height });
     ImGui::SetNextWindowBgAlpha(0.95f);
 
@@ -103,7 +268,7 @@ float sidebar_draw(ViewState& state, float window_height) {
         ImGuiWindowFlags_NoBringToFrontOnFocus);
 
     // ── Header ────────────────────────────────────────────────────────────────
-    ImGui::TextColored(COL_ACCENT, "RAMMB NeoVis");
+    ImGui::TextColored(COL_ACCENT, "RAMMB-NEOVIS");
     ImGui::SameLine();
     ImGui::TextColored(COL_DIM, "Native Viewer");
     ImGui::Separator();
@@ -282,16 +447,42 @@ float sidebar_draw(ViewState& state, float window_height) {
     } else {
         // ── Date range picker ─────────────────────────────────────────────────
         ImGui::TextColored(COL_DIM, "  From:");
-        date_time_row("rng_start",
-            state.date_range.start_year,  state.date_range.start_month,
-            state.date_range.start_day,   state.date_range.start_hour,
-            state.date_range.start_min);
+        if (date_row("rng_start",
+                state.date_range.start_year, state.date_range.start_month,
+                state.date_range.start_day))
+            state.request_start_times = true;
+        ImGui::TextColored(COL_DIM, "    Time:");
+        ImGui::SameLine();
+        time_selector("rng_start_t", state.avail_start_times,
+                      state.start_time_sel,
+                      state.date_range.start_hour, state.date_range.start_min);
 
+        ImGui::Spacing();
         ImGui::TextColored(COL_DIM, "  To:");
-        date_time_row("rng_end",
-            state.date_range.end_year,  state.date_range.end_month,
-            state.date_range.end_day,   state.date_range.end_hour,
-            state.date_range.end_min);
+        if (date_row("rng_end",
+                state.date_range.end_year, state.date_range.end_month,
+                state.date_range.end_day))
+            state.request_end_times = true;
+        ImGui::TextColored(COL_DIM, "    Time:");
+        ImGui::SameLine();
+        time_selector("rng_end_t", state.avail_end_times,
+                      state.end_time_sel,
+                      state.date_range.end_hour, state.date_range.end_min);
+
+        ImGui::Spacing();
+
+        // Time step (for date-range mode too)
+        ImGui::Text("Step:"); ImGui::SameLine();
+        ImGui::SetNextItemWidth(55.0f);
+        const int sopts_r[] = { 1, 5, 10, 30, 60 };
+        if (ImGui::BeginCombo("##step_r", (std::to_string(state.time_step)+"m").c_str())) {
+            for (int s : sopts_r) {
+                bool sel = (state.time_step == s);
+                if (ImGui::Selectable((std::to_string(s)+"m").c_str(), sel)) state.time_step = s;
+                if (sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
 
         if (ImGui::Button("Load Range", { SIDEBAR_W - 16.0f, 0 }))
             state.range_changed = true;

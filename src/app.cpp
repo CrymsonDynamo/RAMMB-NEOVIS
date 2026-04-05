@@ -1,6 +1,9 @@
 #include "app.hpp"
 #include "ui/sidebar.hpp"
+#include "ui/scene_bar.hpp"
 #include "ui/timeline.hpp"
+#include "ui/tools_panel.hpp"
+#include "ui/notifications.hpp"
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -68,7 +71,7 @@ bool App::init(int width, int height) {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_SAMPLES, 4);
 
-    m_window = glfwCreateWindow(width, height, "RAMMB NeoVis", nullptr, nullptr);
+    m_window = glfwCreateWindow(width, height, "RAMMB-NEOVIS", nullptr, nullptr);
     if (!m_window) { std::cerr << "[App] Window failed\n"; glfwTerminate(); return false; }
 
     glfwSetWindowUserPointer    (m_window, this);
@@ -139,6 +142,8 @@ void App::run() {
 // ── Per-frame ────────────────────────────────────────────────────────────────
 
 void App::update(float dt) {
+    notifs_tick(dt);
+
     // ── Export button ─────────────────────────────────────────────────────────
     if (m_state.export_requested) {
         m_state.export_requested = false;
@@ -148,6 +153,15 @@ void App::update(float dt) {
 
     // ── Handle sidebar dirty flags ────────────────────────────────────────────
     if (m_state.source_changed || m_state.refresh_request || m_state.range_changed) {
+        // When source changes, invalidate cached time lists
+        if (m_state.source_changed) {
+            m_state.avail_start_times.clear();
+            m_state.avail_end_times.clear();
+            if (m_state.date_range.use_range) {
+                m_state.request_start_times = true;
+                m_state.request_end_times   = true;
+            }
+        }
         reload_source();
         m_state.source_changed = m_state.refresh_request = m_state.range_changed = false;
     } else if (m_state.zoom_changed) {
@@ -155,6 +169,38 @@ void App::update(float dt) {
         m_tiles.set_frames(m_state.satellite, m_state.sector, m_state.product,
                            m_state.frame_timestamps, m_state.data_zoom);
         m_state.zoom_changed = false;
+    }
+
+    // ── Fetch available times for date-range dropdowns ───────────────────────
+    if (m_state.request_start_times) {
+        m_state.request_start_times = false;
+        m_state.avail_start_times = fetch_times_for_date(
+            m_state.date_range.start_year,
+            m_state.date_range.start_month,
+            m_state.date_range.start_day);
+        m_state.start_time_sel = 0; // default to earliest
+        if (!m_state.avail_start_times.empty()) {
+            std::string s = std::to_string(m_state.avail_start_times.front());
+            if (s.size() >= 12) {
+                m_state.date_range.start_hour = (s[8]-'0')*10 + (s[9]-'0');
+                m_state.date_range.start_min  = (s[10]-'0')*10 + (s[11]-'0');
+            }
+        }
+    }
+    if (m_state.request_end_times) {
+        m_state.request_end_times = false;
+        m_state.avail_end_times = fetch_times_for_date(
+            m_state.date_range.end_year,
+            m_state.date_range.end_month,
+            m_state.date_range.end_day);
+        m_state.end_time_sel = std::max(0, int(m_state.avail_end_times.size()) - 1); // default to latest
+        if (!m_state.avail_end_times.empty()) {
+            std::string s = std::to_string(m_state.avail_end_times.back());
+            if (s.size() >= 12) {
+                m_state.date_range.end_hour = (s[8]-'0')*10 + (s[9]-'0');
+                m_state.date_range.end_min  = (s[10]-'0')*10 + (s[11]-'0');
+            }
+        }
     }
 
     // ── Sync animation settings from UI ──────────────────────────────────────
@@ -181,14 +227,35 @@ void App::update(float dt) {
     // ── Throttle ──────────────────────────────────────────────────────────────
     m_tiles.set_throttle(m_state.download_limit_kbps);
 
+    // ── Tile failure warnings ─────────────────────────────────────────────────
+    {
+        static int s_last_reported_fail = 0;
+        int fails = m_tiles.failed_tiles();
+        if (fails > 0 && fails != s_last_reported_fail && m_tiles.pending_downloads() == 0) {
+            push_notif(std::format("{} tile(s) failed to download (404 or timeout)",
+                       fails - s_last_reported_fail),
+                       NotifLevel::Warn, 7.0f);
+            s_last_reported_fail = fails;
+        }
+        if (fails == 0) s_last_reported_fail = 0; // reset on source change
+    }
+
     // ── Update TileManager with current viewport ──────────────────────────────
     int win_w = 1, win_h = 1;
     glfwGetFramebufferSize(m_window, &win_w, &win_h);
-    float vp_w   = float(win_w) - m_sidebar_w;
-    float aspect = vp_w / float(win_h);
-    float half_h = 0.5f / m_renderer.zoom();
-    float half_w = half_h * aspect;
+    static constexpr float BOTTOM_H = 52.0f + 32.0f; // timeline + status bar
+    float vp_w    = float(win_w) - m_sidebar_w;
+    float render_h = std::max(1.0f, float(win_h) - BOTTOM_H - m_bar_h);
+    float aspect  = vp_w / render_h;
+    float half_h  = 0.5f / m_renderer.zoom();
+    float half_w  = half_h * aspect;
     glm::vec2 pan = m_renderer.pan();
+
+    // Pass tile region selection mask to TileManager
+    if (m_state.tile_select_all)
+        m_tiles.set_tile_selection({});  // empty = download all
+    else
+        m_tiles.set_tile_selection(m_state.tile_selection);
 
     m_tiles.update(pan.x - half_w, pan.x + half_w,
                    pan.y - half_h, pan.y + half_h,
@@ -204,7 +271,11 @@ void App::render() {
     int win_w = 1, win_h = 1;
     glfwGetFramebufferSize(m_window, &win_w, &win_h);
 
-    m_sidebar_w = sidebar_draw(m_state, float(win_h));
+    // ── Scene tabs + settings bar (top of window, full width) ────────────────
+    float bar_h = scene_bar_draw(m_scene_bar, m_state, float(win_w), float(win_h));
+    m_bar_h = bar_h;
+
+    m_sidebar_w = sidebar_draw(m_state, float(win_h) - bar_h, bar_h);
 
     float vp_left  = m_sidebar_w;
     float vp_w     = float(win_w) - vp_left;
@@ -213,6 +284,22 @@ void App::render() {
     static constexpr float TIMELINE_H  = 52.0f;
     static constexpr float STATUSBAR_H = 32.0f;
     float bottom_h  = TIMELINE_H + STATUSBAR_H;
+    float render_h  = float(win_h) - bottom_h - bar_h;
+
+    // ── Right-side tools panel ────────────────────────────────────────────────
+    {
+        float svp_x = vp_left, svp_y = bar_h, svp_w = vp_w, svp_h = render_h;
+        auto w2s_tp = [this, svp_x, svp_y, svp_w, svp_h](glm::vec2 wp) -> glm::vec2 {
+            float half_h = 0.5f / m_renderer.zoom();
+            float half_w = half_h * (svp_w / svp_h);
+            glm::vec2 pan = m_renderer.pan();
+            float nx =  (wp.x - pan.x) / half_w;
+            float ny =  (wp.y - pan.y) / half_h;
+            return { svp_x + (nx + 1.0f) * 0.5f * svp_w,
+                     svp_y + (-ny + 1.0f) * 0.5f * svp_h };
+        };
+        tools_panel_draw(m_state, svp_x, svp_y, svp_w, svp_h, w2s_tp);
+    }
 
     // ── Timeline scrubber ─────────────────────────────────────────────────────
     bool scrubbed = timeline_draw(
@@ -238,8 +325,23 @@ void App::render() {
     int total   = m_tiles.total_tiles();
     float frac  = total > 0 ? std::clamp(float(loaded) / float(total), 0.0f, 1.0f) : 1.0f;
 
-    if (pending > 0) {
-        ImGui::TextColored({ 0.3f, 0.8f, 1.0f, 1.0f }, "Downloading");
+    // Pause / Resume button
+    bool paused = m_tiles.downloads_paused();
+    if (paused) {
+        ImGui::PushStyleColor(ImGuiCol_Button,        { 0.55f,0.40f,0.05f,1.0f });
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, { 0.75f,0.55f,0.10f,1.0f });
+    }
+    if (ImGui::SmallButton(paused ? "Resume" : "Pause")) {
+        paused ? m_tiles.resume_downloads() : m_tiles.pause_downloads();
+    }
+    if (paused) ImGui::PopStyleColor(2);
+    ImGui::SameLine(0, 8);
+
+    if (pending > 0 || paused) {
+        if (paused)
+            ImGui::TextColored({ 1.0f, 0.65f, 0.1f, 1.0f }, "Paused");
+        else
+            ImGui::TextColored({ 0.3f, 0.8f, 1.0f, 1.0f }, "Downloading");
         ImGui::SameLine();
         ImGui::Text("%d / %d tiles", loaded, total);
     } else {
@@ -265,15 +367,35 @@ void App::render() {
 
     // ── Export panel + crop overlay ───────────────────────────────────────────
     if (m_export_state.open) {
-        float render_vp_y = 0.0f; // top of viewport in screen coords
-        float render_vp_h = float(win_h) - bottom_h;
+        // Screen-space tile render viewport (excludes sidebar + bottom bar).
+        // Both s2w and w2s must use the SAME viewport as the tile render so
+        // the crop overlay is pixel-aligned with the imagery — no parallax.
+        float svp_x = m_sidebar_w;
+        float svp_y = bar_h;        // render area starts below scene tab bar
+        float svp_w = vp_w;
+        float svp_h = render_h;
 
-        auto s2w = [this](glm::vec2 sp) { return m_renderer.screen_to_world(sp); };
-        auto w2s = [this](glm::vec2 wp) { return world_to_screen(wp); };
+        auto s2w = [this, svp_x, svp_y, svp_w, svp_h](glm::vec2 sp) -> glm::vec2 {
+            float nx =  ((sp.x - svp_x) / svp_w) * 2.0f - 1.0f;
+            float ny = -((sp.y - svp_y) / svp_h) * 2.0f + 1.0f;
+            float half_h = 0.5f / m_renderer.zoom();
+            float half_w = half_h * (svp_w / svp_h);
+            glm::vec2 pan = m_renderer.pan();
+            return { pan.x + nx * half_w, pan.y + ny * half_h };
+        };
+        auto w2s = [this, svp_x, svp_y, svp_w, svp_h](glm::vec2 wp) -> glm::vec2 {
+            float half_h = 0.5f / m_renderer.zoom();
+            float half_w = half_h * (svp_w / svp_h);
+            glm::vec2 pan = m_renderer.pan();
+            float nx =  (wp.x - pan.x) / half_w;
+            float ny =  (wp.y - pan.y) / half_h;
+            return { svp_x + (nx + 1.0f) * 0.5f * svp_w,
+                     svp_y + (-ny + 1.0f) * 0.5f * svp_h };
+        };
 
         bool triggered = export_panel_draw(
             m_export_state,
-            m_sidebar_w, render_vp_y, vp_w, render_vp_h,
+            svp_x, svp_y, svp_w, svp_h,
             int(m_state.frame_timestamps.size()),
             s2w, w2s);
 
@@ -308,20 +430,48 @@ void App::render() {
     }
 
     // ── 3D tile render ────────────────────────────────────────────────────────
-    int render_h = int(float(win_h) - bottom_h);
-    glScissor(int(m_sidebar_w), int(bottom_h), int(vp_w), render_h);
+    int render_h_i = int(render_h);
+    glScissor(int(m_sidebar_w), int(bottom_h), int(vp_w), render_h_i);
     glEnable(GL_SCISSOR_TEST);
-    m_renderer.resize_viewport(int(vp_left), int(bottom_h), int(vp_w), render_h);
+    m_renderer.resize_viewport(int(vp_left), int(bottom_h), int(vp_w), render_h_i);
     m_renderer.begin_frame();
     m_tiles.draw(m_state.current_frame, m_renderer);
     glDisable(GL_SCISSOR_TEST);
     m_renderer.resize_viewport(0, 0, win_w, win_h);
+
+    // ── Notification toasts (bottom-right) ───────────────────────────────────
+    notifs_draw(float(win_w), float(win_h), bottom_h);
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
 // ── Data fetching ─────────────────────────────────────────────────────────────
+
+std::vector<int64_t> App::fetch_times_for_date(int year, int month, int day) {
+    char day_s[16];
+    snprintf(day_s, sizeof(day_s), "%04d%02d%02d", year, month, day);
+
+    std::string url = std::format("{}/json/{}/{}/{}/{}_by_hour.json",
+        BASE_DATA, m_state.satellite, m_state.sector, m_state.product, day_s);
+
+    std::vector<uint8_t> buf;
+    if (!m_http.get(url, buf)) return {};
+
+    auto j = json::parse(buf, nullptr, false);
+    if (j.is_discarded() || !j.contains("timestamps_int")) return {};
+
+    std::vector<int64_t> times;
+    auto& by_hour = j["timestamps_int"];
+    for (auto& [hour_key, arr] : by_hour.items()) {
+        for (auto& ts_val : arr)
+            times.push_back(ts_val.get<int64_t>());
+    }
+
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+    return times;
+}
 
 bool App::fetch_timestamps() {
     auto& dr = m_state.date_range;
@@ -429,17 +579,33 @@ bool App::fetch_timestamps() {
             std::unique(m_state.frame_timestamps.begin(), m_state.frame_timestamps.end()),
             m_state.frame_timestamps.end());
 
-        // Apply time_step filter to thin the frame list if needed
+        // Apply time_step filter to thin the frame list if needed.
+        // Timestamps are YYYYMMDDHHMMSS — convert to real minutes for comparison.
         if (m_state.time_step > 1 && !m_state.frame_timestamps.empty()) {
+            // Convert YYYYMMDDHHMMSS → total minutes since epoch-ish for spacing calc
+            auto ts_to_minutes = [](int64_t ts) -> int64_t {
+                ts /= 100; // skip seconds
+                int mm = int(ts % 100);        ts /= 100;
+                int hh = int(ts % 100);        ts /= 100;
+                int dd = int(ts % 100);        ts /= 100;
+                int mo = int(ts % 100);        ts /= 100;
+                int yy = int(ts);
+                // Approximate: good enough for spacing (not calendar-exact)
+                return int64_t(yy) * 525960LL  // ~365.25 * 24 * 60
+                     + int64_t(mo) * 43800LL   // ~30.4 * 24 * 60
+                     + int64_t(dd) * 1440LL
+                     + int64_t(hh) * 60LL
+                     + int64_t(mm);
+            };
+
             std::vector<int64_t> filtered;
             filtered.push_back(m_state.frame_timestamps.front());
-            int64_t last = m_state.frame_timestamps.front();
-            for (auto ts : m_state.frame_timestamps) {
-                // ts is YYYYMMDDHHMMSS; extract HHMM
-                int64_t diff_min = ((ts / 100) % 10000) - ((last / 100) % 10000);
-                if (std::abs(diff_min) >= m_state.time_step) {
-                    filtered.push_back(ts);
-                    last = ts;
+            int64_t last_min = ts_to_minutes(m_state.frame_timestamps.front());
+            for (size_t i = 1; i < m_state.frame_timestamps.size(); ++i) {
+                int64_t cur_min = ts_to_minutes(m_state.frame_timestamps[i]);
+                if (cur_min - last_min >= m_state.time_step) {
+                    filtered.push_back(m_state.frame_timestamps[i]);
+                    last_min = cur_min;
                 }
             }
             m_state.frame_timestamps = std::move(filtered);
@@ -462,6 +628,9 @@ void App::apply_frames() {
 
     m_tiles.set_frames(m_state.satellite, m_state.sector, m_state.product,
                        m_state.frame_timestamps, m_state.data_zoom);
+    // update() is called at the end of App::update() and will eagerly queue
+    // all frames' visible tiles on the very first frame after reload.
+
     m_anim.set_frames(m_state.frame_timestamps);
     m_anim.set_fps(m_state.fps);
     m_anim.set_mode(AnimationController::Mode(m_state.loop_mode));
@@ -474,9 +643,20 @@ void App::reload_source() {
     m_tiles.clear(m_renderer);
     m_anim.clear();
     m_state.frame_timestamps.clear();
+    m_state.current_frame = 0;
+    m_state.playing       = false;  // stop playback so first update() sees frame 0
 
-    if (!fetch_timestamps()) return;
+    if (!fetch_timestamps()) {
+        push_notif("Failed to fetch timestamps. Check connection or product selection.",
+                   NotifLevel::Error, 8.0f);
+        return;
+    }
     apply_frames();
+
+    int N = int(m_state.frame_timestamps.size());
+    push_notif(std::format("Loaded {} frames for {}/{}/{}",
+               N, m_state.satellite, m_state.sector, m_state.product),
+               NotifLevel::Info, 4.0f);
 }
 
 // ── GLFW callbacks ─────────────────────────────────────────────────────────────
@@ -511,10 +691,29 @@ void App::cb_scroll(GLFWwindow* w, double /*dx*/, double dy) {
     glfwGetCursorPos(w, &mx, &my);
     if (mx < app->m_sidebar_w) return;
 
-    glm::vec2 before = app->m_renderer.screen_to_world({ float(mx), float(my) });
+    // Use the correct tile render viewport (not the full window) so zoom-to-cursor
+    // is pixel-accurate relative to the imagery.
+    int win_w = 1, win_h = 1;
+    glfwGetWindowSize(w, &win_w, &win_h);
+    static constexpr float BOTTOM_H = 52.0f + 32.0f;
+    float svp_x = app->m_sidebar_w;
+    float svp_y = app->m_bar_h;
+    float svp_w = float(win_w) - svp_x;
+    float svp_h = std::max(1.0f, float(win_h) - BOTTOM_H - app->m_bar_h);
+
+    auto s2w = [&](float sx, float sy) -> glm::vec2 {
+        float nx =  ((sx - svp_x) / svp_w) * 2.0f - 1.0f;
+        float ny = -((sy - svp_y) / svp_h) * 2.0f + 1.0f;
+        float half_h = 0.5f / app->m_renderer.zoom();
+        float half_w = half_h * (svp_w / svp_h);
+        glm::vec2 pan = app->m_renderer.pan();
+        return { pan.x + nx * half_w, pan.y + ny * half_h };
+    };
+
+    glm::vec2 before = s2w(float(mx), float(my));
     float new_zoom = std::clamp(app->m_renderer.zoom() * (dy > 0 ? 1.15f : 1.0f/1.15f), 0.25f, 256.0f);
     app->m_renderer.set_zoom(new_zoom);
-    glm::vec2 after = app->m_renderer.screen_to_world({ float(mx), float(my) });
+    glm::vec2 after = s2w(float(mx), float(my));
     app->m_renderer.set_pan(app->m_renderer.pan() + (before - after));
 }
 
@@ -540,14 +739,25 @@ void App::cb_mouse_button(GLFWwindow* w, int btn, int action, int /*mods*/) {
 void App::cb_cursor_pos(GLFWwindow* w, double x, double y) {
     auto* app = static_cast<App*>(glfwGetWindowUserPointer(w));
     if (!app->m_dragging) return;
+
+    // If the export crop overlay or tile selector has taken ownership of this
+    // drag, don't also pan the viewport.
+    if (app->m_export_state.open &&
+        (app->m_export_state.dragging_body || app->m_export_state.dragging_corner))
+        return;
+    if (app->m_state.tools_panel_open)
+        return;
+
     int win_w = 1, win_h = 1;
     glfwGetWindowSize(w, &win_w, &win_h);
-    float vp_w   = float(win_w) - app->m_sidebar_w;
-    float aspect = vp_w / float(win_h);
+    static constexpr float BOTTOM_H = 52.0f + 32.0f; // timeline + status bar
+    float vp_w    = float(win_w) - app->m_sidebar_w;
+    float render_h = std::max(1.0f, float(win_h) - BOTTOM_H - app->m_bar_h);
+    float aspect  = vp_w / render_h;
     glm::vec2 delta = glm::vec2{ float(x), float(y) } - app->m_drag_start_screen;
     float half_h = 0.5f / app->m_renderer.zoom();
     float half_w = half_h * aspect;
     app->m_renderer.set_pan(app->m_drag_start_pan + glm::vec2{
-        -delta.x / vp_w * 2.0f * half_w,
-         delta.y / float(win_h) * 2.0f * half_h });
+        -delta.x / vp_w     * 2.0f * half_w,
+         delta.y / render_h * 2.0f * half_h });
 }

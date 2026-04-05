@@ -19,7 +19,9 @@ struct ExportState {
     bool  dragging_body    = false;
     bool  dragging_corner  = false;
     int   drag_corner_idx  = -1; // 0=TL 1=TR 2=BL 3=BR
-    float drag_ox{}, drag_oy{}; // body drag world-space offset at click
+
+    // Resolution preset: 0=Low 1=Medium 2=High 3=Custom
+    int res_preset = 1;
 
     // Output directory / file path buffer for UI
     char  path_buf[512] = {};

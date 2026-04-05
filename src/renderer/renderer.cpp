@@ -3,6 +3,7 @@
 #include <iostream>
 #include <string>
 #include <algorithm>
+#include <cstring>
 
 Renderer::~Renderer() {
     if (m_vao) glDeleteVertexArrays(1, &m_vao);

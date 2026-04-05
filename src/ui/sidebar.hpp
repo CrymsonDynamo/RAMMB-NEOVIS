@@ -37,9 +37,25 @@ struct ViewState {
     // ── Date range ────────────────────────────────────────────────────────────
     DateRange date_range;
 
+    // ── Tile region selection ────────────────────────────────────────────────
+    // 2D bitmask of which tiles (row,col) to download at the current data_zoom.
+    // When empty, ALL tiles are downloaded (default behavior).
+    // Indexed as tile_selection[row * (1<<data_zoom) + col].
+    std::vector<bool> tile_selection;
+    bool              tile_select_all  = true;  // true = download all, ignore mask
+    bool              tools_panel_open = false;  // right-side panel visibility
+
     // ── Settings ──────────────────────────────────────────────────────────────
     int download_limit_kbps = 0;
-    int download_threads    = 16;
+    int download_threads    = 4;
+
+    // ── Available timestamps for date-range time pickers ─────────────────────
+    std::vector<int64_t> avail_start_times;   // all timestamps for the start date
+    std::vector<int64_t> avail_end_times;     // all timestamps for the end date
+    bool request_start_times = false;         // ask App to fetch avail_start_times
+    bool request_end_times   = false;         // ask App to fetch avail_end_times
+    int  start_time_sel      = 0;             // selected index in avail_start_times
+    int  end_time_sel        = 0;             // selected index in avail_end_times
 
     // ── Dirty flags (cleared by App after handling) ───────────────────────────
     bool source_changed   = false;
@@ -50,4 +66,5 @@ struct ViewState {
 };
 
 // Draws the left sidebar and updates state. Returns sidebar pixel width.
-float sidebar_draw(ViewState& state, float window_height);
+// y_offset: pixels from top of window to start (e.g. scene bar height).
+float sidebar_draw(ViewState& state, float window_height, float y_offset = 0.0f);

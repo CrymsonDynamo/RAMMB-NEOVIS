@@ -2,11 +2,28 @@
 #include <imgui.h>
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
 #include <cmath>
 #include <format>
 #include <filesystem>
 
 namespace fs = std::filesystem;
+
+// Opens a native file/folder picker via zenity (Linux). Returns selected path or "".
+static std::string run_file_picker(bool directory_only, const char* title) {
+    std::string cmd = directory_only
+        ? std::format("zenity --file-selection --directory --title=\"{}\" 2>/dev/null", title)
+        : std::format("zenity --file-selection --save --confirm-overwrite --title=\"{}\" 2>/dev/null", title);
+    FILE* f = popen(cmd.c_str(), "r");
+    if (!f) return {};
+    char buf[1024] = {};
+    bool got = (fgets(buf, sizeof(buf), f) != nullptr);
+    pclose(f);
+    if (!got) return {};
+    std::string result(buf);
+    if (!result.empty() && result.back() == '\n') result.pop_back();
+    return result;
+}
 
 static const ImVec4 COL_ACCENT = { 0.20f, 0.60f, 1.00f, 1.0f };
 static const ImVec4 COL_WARN   = { 1.00f, 0.70f, 0.10f, 1.0f };
@@ -76,53 +93,58 @@ static void draw_crop_overlay(ExportState&          state,
         return p.x >= vp_x && p.x <= vp_x+vp_w && p.y >= vp_y && p.y <= vp_y+vp_h;
     };
 
+    // Start drag on click — only if ImGui isn't consuming the event (e.g. panel buttons)
     if (!state.dragging_body && !state.dragging_corner) {
-        if (io.MouseClicked[0] && in_vp(mp)) {
-            // Check corner handles first
+        if (io.MouseClicked[0] && in_vp(mp) && !io.WantCaptureMouse) {
             for (int ci = 0; ci < 4; ++ci) {
                 float dx = mp.x - corners[ci].x;
                 float dy = mp.y - corners[ci].y;
                 if (dx*dx + dy*dy <= (HANDLE_R+4)*(HANDLE_R+4)) {
-                    state.dragging_corner  = true;
-                    state.drag_corner_idx  = ci;
+                    state.dragging_corner = true;
+                    state.drag_corner_idx = ci;
                     break;
                 }
             }
-            // Then body drag
             if (!state.dragging_corner &&
                 mp.x >= sx0 && mp.x <= sx1 && mp.y >= sy0 && mp.y <= sy1) {
                 state.dragging_body = true;
-                glm::vec2 wmp = s2w(mp);
-                state.drag_ox = wmp.x - state.crop.x_min;
-                state.drag_oy = wmp.y - state.crop.y_min;
             }
         }
     }
 
-    if (state.dragging_corner && io.MouseDown[0]) {
-        glm::vec2 wmp = s2w(mp);
-        int ci = state.drag_corner_idx;
-        // TL=0 TR=1 BL=2 BR=3
-        if (ci == 0) { state.crop.x_min = wmp.x; state.crop.y_max = wmp.y; }
-        if (ci == 1) { state.crop.x_max = wmp.x; state.crop.y_max = wmp.y; }
-        if (ci == 2) { state.crop.x_min = wmp.x; state.crop.y_min = wmp.y; }
-        if (ci == 3) { state.crop.x_max = wmp.x; state.crop.y_min = wmp.y; }
-        // Keep min < max
-        if (state.crop.x_min > state.crop.x_max) std::swap(state.crop.x_min, state.crop.x_max);
-        if (state.crop.y_min > state.crop.y_max) std::swap(state.crop.y_min, state.crop.y_max);
-    } else {
-        state.dragging_corner = false;
+    // Apply incremental delta — never snaps, immune to click-offset issues
+    if (io.MouseDown[0] && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) {
+        glm::vec2 prev_s = { mp.x - io.MouseDelta.x, mp.y - io.MouseDelta.y };
+        glm::vec2 curr_w = s2w(mp);
+        glm::vec2 prev_w = s2w(prev_s);
+        float dx = curr_w.x - prev_w.x;
+        float dy = curr_w.y - prev_w.y;
+
+        if (state.dragging_corner) {
+            int ci = state.drag_corner_idx;
+            if (ci == 0) { state.crop.x_min += dx; state.crop.y_max += dy; } // TL
+            if (ci == 1) { state.crop.x_max += dx; state.crop.y_max += dy; } // TR
+            if (ci == 2) { state.crop.x_min += dx; state.crop.y_min += dy; } // BL
+            if (ci == 3) { state.crop.x_max += dx; state.crop.y_min += dy; } // BR
+            // Clamp: don't let opposite corners cross
+            const float MIN = 0.01f;
+            if (state.crop.x_max - state.crop.x_min < MIN) {
+                if (ci == 0 || ci == 2) state.crop.x_min = state.crop.x_max - MIN;
+                else                    state.crop.x_max = state.crop.x_min + MIN;
+            }
+            if (state.crop.y_max - state.crop.y_min < MIN) {
+                if (ci == 0 || ci == 1) state.crop.y_max = state.crop.y_min + MIN;
+                else                    state.crop.y_min = state.crop.y_max - MIN;
+            }
+        } else if (state.dragging_body) {
+            state.crop.x_min += dx; state.crop.x_max += dx;
+            state.crop.y_min += dy; state.crop.y_max += dy;
+        }
     }
 
-    if (state.dragging_body && io.MouseDown[0]) {
-        glm::vec2 wmp = s2w(mp);
-        float cw = state.crop.width(), ch = state.crop.height();
-        state.crop.x_min = wmp.x - state.drag_ox;
-        state.crop.y_min = wmp.y - state.drag_oy;
-        state.crop.x_max = state.crop.x_min + cw;
-        state.crop.y_max = state.crop.y_min + ch;
-    } else {
-        state.dragging_body = false;
+    if (!io.MouseDown[0]) {
+        state.dragging_corner = false;
+        state.dragging_body   = false;
     }
 }
 
@@ -174,43 +196,75 @@ bool export_panel_draw(ExportState&          state,
     // ── Output path ───────────────────────────────────────────────────────────
     ImGui::TextColored(COL_ACCENT, "OUTPUT");
     ImGui::Spacing();
-    ImGui::SetNextItemWidth(PANEL_W - 16.0f);
-    ImGui::InputText("##path", state.path_buf, sizeof(state.path_buf));
-    ImGui::TextColored({ 0.55f,0.55f,0.55f,1.0f },
-        state.settings.format == ExportFormat::PNG_SEQUENCE
-            ? "  Folder path (created if needed)"
-            : "  File path  e.g. /home/user/out.mp4");
+    {
+        bool is_dir = state.settings.format == ExportFormat::PNG_SEQUENCE;
+        ImGui::SetNextItemWidth(PANEL_W - 80.0f);
+        ImGui::InputText("##path", state.path_buf, sizeof(state.path_buf));
+        ImGui::SameLine(0, 4);
+        if (ImGui::Button("Browse...", { 64.0f, 0 })) {
+            const char* title = is_dir ? "Select Output Folder" : "Save Output File";
+            std::string picked = run_file_picker(is_dir, title);
+            if (!picked.empty())
+                strncpy(state.path_buf, picked.c_str(), sizeof(state.path_buf) - 1);
+        }
+        ImGui::TextColored({ 0.55f,0.55f,0.55f,1.0f },
+            is_dir ? "  Folder path (created if needed)"
+                   : "  File path  e.g. /home/user/out.mp4");
+    }
 
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
     // ── Resolution ────────────────────────────────────────────────────────────
+    // Output dimensions always match the crop aspect ratio.
+    // Presets set the long-edge pixel count; Custom lets you override width.
     ImGui::TextColored(COL_ACCENT, "RESOLUTION");
     ImGui::Spacing();
 
-    const char* res_presets[] = { "720p", "1080p", "1440p", "4K" };
-    const int   res_w[]       = {  1280,   1920,    2560,   3840 };
-    const int   res_h[]       = {   720,   1080,    1440,   2160 };
+    // Compute crop aspect (w/h). Guard against degenerate crops.
+    float crop_w = state.crop.width();
+    float crop_h = state.crop.height();
+    float crop_ar = (crop_h > 0.001f) ? (crop_w / crop_h) : 1.0f;
+
+    // Long-edge pixel counts for Low / Medium / High
+    const char* preset_names[]  = { "Low", "Medium", "High", "Custom" };
+    const int   preset_long[]   = { 720, 1280, 1920, 0 };   // 0 = custom
+    float bw = (PANEL_W - 20.0f) / 4.0f;
     for (int i = 0; i < 4; ++i) {
-        bool sel = (state.settings.out_width == res_w[i] && state.settings.out_height == res_h[i]);
-        if (sel) { ImGui::PushStyleColor(ImGuiCol_Button, { 0.15f,0.45f,0.80f,1.0f });
+        bool sel = (state.res_preset == i);
+        if (sel) { ImGui::PushStyleColor(ImGuiCol_Button,        { 0.15f,0.45f,0.80f,1.0f });
                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, { 0.15f,0.45f,0.80f,1.0f }); }
-        if (ImGui::Button(res_presets[i], { (PANEL_W - 20.0f) / 4.0f, 0 })) {
-            state.settings.out_width  = res_w[i];
-            state.settings.out_height = res_h[i];
-        }
+        if (ImGui::Button(preset_names[i], { bw, 0 }))
+            state.res_preset = i;
         if (sel) ImGui::PopStyleColor(2);
         if (i < 3) ImGui::SameLine(0, 4);
     }
     ImGui::Spacing();
-    ImGui::Text("  W:"); ImGui::SameLine();
-    ImGui::SetNextItemWidth(65.0f);
-    ImGui::InputInt("##ow", &state.settings.out_width, 0);
-    ImGui::SameLine();
-    ImGui::Text("H:"); ImGui::SameLine();
-    ImGui::SetNextItemWidth(65.0f);
-    ImGui::InputInt("##oh", &state.settings.out_height, 0);
-    state.settings.out_width  = std::clamp(state.settings.out_width,  64, 7680);
-    state.settings.out_height = std::clamp(state.settings.out_height, 64, 4320);
+
+    if (state.res_preset < 3) {
+        // Derive W and H from long edge + crop AR
+        int long_edge = preset_long[state.res_preset];
+        if (crop_ar >= 1.0f) {
+            state.settings.out_width  = long_edge;
+            state.settings.out_height = std::max(2, int(float(long_edge) / crop_ar));
+        } else {
+            state.settings.out_height = long_edge;
+            state.settings.out_width  = std::max(2, int(float(long_edge) * crop_ar));
+        }
+        // H.264 requires even dimensions
+        state.settings.out_width  &= ~1;
+        state.settings.out_height &= ~1;
+        ImGui::TextColored({ 0.55f,0.55f,0.55f,1.0f }, "  %d x %d px  (%.3f:1)",
+            state.settings.out_width, state.settings.out_height, crop_ar);
+    } else {
+        // Custom: user sets width, height is auto-derived from crop AR
+        ImGui::Text("  Width:"); ImGui::SameLine();
+        ImGui::SetNextItemWidth(70.0f);
+        ImGui::InputInt("##ow", &state.settings.out_width, 0);
+        state.settings.out_width = (std::clamp(state.settings.out_width, 64, 7680) & ~1);
+        state.settings.out_height = std::max(2, int(float(state.settings.out_width) / crop_ar)) & ~1;
+        ImGui::TextColored({ 0.55f,0.55f,0.55f,1.0f }, "  → %d x %d px  (%.3f:1)",
+            state.settings.out_width, state.settings.out_height, crop_ar);
+    }
 
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
@@ -291,25 +345,50 @@ bool export_panel_draw(ExportState&          state,
 
     // ── Export button ─────────────────────────────────────────────────────────
     if (!is_running) {
+        // Determine required extension and whether the path already has it
+        const char* req_ext = nullptr;
+        bool is_seq = state.settings.format == ExportFormat::PNG_SEQUENCE;
+        if (!is_seq) {
+            req_ext = (state.settings.format == ExportFormat::MP4) ? ".mp4" : ".gif";
+        }
+
+        bool path_ok = strlen(state.path_buf) > 0;
+        // Warn if file path is missing the right extension (not needed for PNG seq dirs)
+        bool ext_ok = true;
+        if (path_ok && req_ext) {
+            std::string p(state.path_buf);
+            std::string ext(req_ext);
+            ext_ok = p.size() >= ext.size() &&
+                     p.compare(p.size() - ext.size(), ext.size(), ext) == 0;
+        }
+
+        bool ok = path_ok && state.crop.valid() && total_frames > 0;
+        if (!ok) ImGui::BeginDisabled();
         ImGui::PushStyleColor(ImGuiCol_Button,        { 0.15f,0.50f,0.15f,1.0f });
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, { 0.20f,0.70f,0.20f,1.0f });
-        bool ok = strlen(state.path_buf) > 0 && state.crop.valid() && total_frames > 0;
-        if (!ok) ImGui::BeginDisabled();
         if (ImGui::Button("Export", { PANEL_W - 16.0f, 28.0f })) {
-            state.settings.output_path = state.path_buf;
+            // Auto-append extension if missing so FFmpeg doesn't guess wrong format
+            std::string fixed_path(state.path_buf);
+            if (req_ext && !ext_ok) {
+                fixed_path += req_ext;
+                strncpy(state.path_buf, fixed_path.c_str(), sizeof(state.path_buf) - 1);
+            }
+            state.settings.output_path = fixed_path;
             state.settings.crop        = state.crop;
             export_triggered = true;
         }
-        if (!ok) ImGui::EndDisabled();
         ImGui::PopStyleColor(2);
+        if (!ok) ImGui::EndDisabled();
 
         if (!ok) {
-            if (strlen(state.path_buf) == 0)
+            if (!path_ok)
                 ImGui::TextColored(COL_WARN, "  Set an output path above");
             else if (!state.crop.valid())
                 ImGui::TextColored(COL_WARN, "  Crop region is invalid");
             else if (total_frames == 0)
                 ImGui::TextColored(COL_WARN, "  No frames loaded");
+        } else if (!ext_ok && req_ext) {
+            ImGui::TextColored(COL_WARN, "  Extension will be added: %s", req_ext);
         }
     }
 

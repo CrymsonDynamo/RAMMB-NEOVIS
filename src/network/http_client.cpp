@@ -38,7 +38,7 @@ bool HttpClient::get(const std::string& url, std::vector<uint8_t>& out) {
     curl_easy_setopt(c, CURLOPT_WRITEDATA,     &out);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(c, CURLOPT_TIMEOUT,        30L);
-    curl_easy_setopt(c, CURLOPT_USERAGENT,      "StormView/0.1");
+    curl_easy_setopt(c, CURLOPT_USERAGENT,      "RAMMB-NEOVIS/0.1");
     // Accept gzip to reduce download size
     curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");
 

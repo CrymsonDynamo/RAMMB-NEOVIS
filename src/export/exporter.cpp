@@ -22,16 +22,28 @@ namespace fs = std::filesystem;
 bool Exporter::start(const ExportSettings&           settings,
                      std::vector<ExportFrame>         frames,
                      std::shared_ptr<ExportProgress>  progress) {
-    if (m_thread.joinable()) return false;
+    // Join the previous thread if it finished but hasn't been joined yet.
+    // This is the normal case after a successful (or failed) export.
+    if (m_thread.joinable()) {
+        if (m_progress && !m_progress->running.load()) {
+            m_thread.join(); // safe: thread has already returned
+        } else {
+            return false;   // genuinely still running — don't interrupt
+        }
+    }
+
     m_cancel.store(false);
     progress->running.store(true);
     progress->finished.store(false);
     progress->failed.store(false);
     progress->frames_done.store(0);
     progress->frames_total.store(int(frames.size()));
+    progress->error_msg.clear();
+    progress->output_path.clear();
 
-    m_thread = std::thread(&Exporter::run, this,
-                           settings, std::move(frames), progress);
+    m_progress = progress;
+    m_thread   = std::thread(&Exporter::run, this,
+                             settings, std::move(frames), progress);
     return true;
 }
 
@@ -70,7 +82,9 @@ bool Exporter::write_mp4(const ExportSettings&         settings,
                           ExportProgress&               prog) {
     if (frames.empty()) { prog.error_msg = "No frames"; return false; }
 
-    int W = settings.out_width, H = settings.out_height;
+    // H.264 requires even dimensions
+    int W = (settings.out_width  / 2) * 2;
+    int H = (settings.out_height / 2) * 2;
     std::string path = settings.output_path;
 
     // Pick encoder: prefer NVENC, fall back to libx264
@@ -87,11 +101,17 @@ bool Exporter::write_mp4(const ExportSettings&         settings,
     AVStream* stream = avformat_new_stream(fmt_ctx, nullptr);
     if (!stream) { avformat_free_context(fmt_ctx); prog.error_msg = "avformat_new_stream failed"; return false; }
 
+    // Use millisecond time base — supports any FPS cleanly.
+    // pts increments by pts_per_frame each frame so duration is exact.
+    const int     TB_DEN       = 1000;
+    const int64_t pts_per_frame = int64_t(TB_DEN / settings.fps);  // ms per frame
+    const int     fps_n = std::max(1, int(std::lround(settings.fps)));
+
     AVCodecContext* cc = avcodec_alloc_context3(codec);
     cc->width        = W;
     cc->height       = H;
-    cc->time_base    = { 1, int(settings.fps * 1000) };
-    cc->framerate    = { int(settings.fps * 1000), 1000 };
+    cc->time_base    = { 1, TB_DEN };   // 1 ms precision
+    cc->framerate    = { fps_n, 1 };
     cc->pix_fmt      = AV_PIX_FMT_YUV420P;
     cc->gop_size     = 10;
     cc->max_b_frames = 0;
@@ -102,14 +122,18 @@ bool Exporter::write_mp4(const ExportSettings&         settings,
         av_opt_set(cc->priv_data, "rc",     "vbr", 0);
         av_opt_set_int(cc->priv_data, "cq", settings.crf, 0);
     } else {
-        av_opt_set(cc->priv_data, "preset", "fast", 0);
-        av_opt_set(cc->priv_data, "crf",    std::to_string(settings.crf).c_str(), 0);
+        av_opt_set(cc->priv_data, "preset",  "fast", 0);
+        av_opt_set(cc->priv_data, "crf",     std::to_string(settings.crf).c_str(), 0);
+        av_opt_set(cc->priv_data, "profile", "main", 0);  // broad player compatibility
     }
 
     if (fmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
         cc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
-    stream->time_base = cc->time_base;
+    // faststart: move moov atom to front of file so players can seek without buffering
+    av_opt_set(fmt_ctx->priv_data, "movflags", "faststart", 0);
+
+    stream->time_base = { 1, TB_DEN };
 
     if (avcodec_open2(cc, codec, nullptr) < 0) {
         avcodec_free_context(&cc); avformat_free_context(fmt_ctx);
@@ -125,7 +149,11 @@ bool Exporter::write_mp4(const ExportSettings&         settings,
             return false;
         }
     }
-    avformat_write_header(fmt_ctx, nullptr);
+    if (avformat_write_header(fmt_ctx, nullptr) < 0) {
+        avcodec_free_context(&cc);
+        avformat_free_context(fmt_ctx);
+        return false;
+    }
 
     AVFrame*  frame = av_frame_alloc();
     frame->format = AV_PIX_FMT_YUV420P;
@@ -137,13 +165,13 @@ bool Exporter::write_mp4(const ExportSettings&         settings,
     AVPacket*   pkt = av_packet_alloc();
 
     int64_t pts = 0;
-    int     frames_per_src = std::max(1, int(1000.0f / settings.fps / (1000.0f / (settings.fps * 1000))));
 
     for (int i = 0; i < int(frames.size()) && !m_cancel; ++i) {
         const uint8_t* src    = frames[i].rgba.data();
         int            stride = W * 4;
         sws_scale(sws, &src, &stride, 0, H, frame->data, frame->linesize);
-        frame->pts = pts++;
+        frame->pts  = pts;
+        pts        += pts_per_frame;   // advance by ms-per-frame, not by 1
 
         if (avcodec_send_frame(cc, frame) >= 0) {
             while (avcodec_receive_packet(cc, pkt) >= 0) {
@@ -202,11 +230,27 @@ bool Exporter::write_gif(const ExportSettings&         settings,
     cc->framerate  = { 100, std::max(1, int(100.0f / settings.fps)) };
     stream->time_base = cc->time_base;
 
-    avcodec_open2(cc, codec, nullptr);
+    if (avcodec_open2(cc, codec, nullptr) < 0) {
+        avcodec_free_context(&cc);
+        avformat_free_context(fmt_ctx);
+        prog.error_msg = "GIF codec open failed";
+        return false;
+    }
     avcodec_parameters_from_context(stream->codecpar, cc);
 
-    avio_open(&fmt_ctx->pb, path.c_str(), AVIO_FLAG_WRITE);
-    avformat_write_header(fmt_ctx, nullptr);
+    if (avio_open(&fmt_ctx->pb, path.c_str(), AVIO_FLAG_WRITE) < 0) {
+        avcodec_free_context(&cc);
+        avformat_free_context(fmt_ctx);
+        prog.error_msg = "Cannot open output file: " + path;
+        return false;
+    }
+    if (avformat_write_header(fmt_ctx, nullptr) < 0) {
+        avcodec_free_context(&cc);
+        avio_closep(&fmt_ctx->pb);
+        avformat_free_context(fmt_ctx);
+        prog.error_msg = "GIF write_header failed";
+        return false;
+    }
 
     SwsContext* sws   = make_sws(W, H, AV_PIX_FMT_PAL8);
     AVFrame*    frame = av_frame_alloc();
