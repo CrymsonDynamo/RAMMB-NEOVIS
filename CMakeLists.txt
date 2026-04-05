@@ -167,11 +167,11 @@ set(CPACK_DEBIAN_PACKAGE_SECTION    "science")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY   "optional")
 set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
 set(CPACK_DEBIAN_PACKAGE_DEPENDS
-    "libglfw3 (>= 3.3), libglew2.2, libcurl4, \
-libavcodec60 | libavcodec-extra60 | libavcodec59 | libavcodec-extra59, \
-libavformat60 | libavformat59, \
-libavutil58 | libavutil57, \
-libswscale7 | libswscale6, \
+    "libglfw3 (>= 3.3), libglew2.2 | libglew2.1, libcurl4, \
+libavcodec61 | libavcodec60 | libavcodec-extra60 | libavcodec59 | libavcodec-extra59, \
+libavformat61 | libavformat60 | libavformat59, \
+libavutil59 | libavutil58 | libavutil57, \
+libswscale8 | libswscale7 | libswscale6, \
 libgl1, zenity")
 set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
     "RAMMB-NEOVIS — native C++/OpenGL satellite imagery viewer\n"
