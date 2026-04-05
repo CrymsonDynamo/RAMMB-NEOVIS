@@ -5,8 +5,14 @@ on:
     tags:
       - 'v*'
 
+# Both jobs share the same release; whichever finishes first creates it,
+# the second one appends its artifact.
+permissions:
+  contents: write
+
 jobs:
-  build-linux:
+  # ── .deb package ─────────────────────────────────────────────────────────────
+  build-deb:
     runs-on: ubuntu-22.04
 
     steps:
@@ -14,7 +20,44 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            cmake \
+            libglfw3-dev libglew-dev libglm-dev \
+            libcurl4-openssl-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            nlohmann-json3-dev \
+            libsqlite3-dev \
+            zenity
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Package .deb
+        run: |
+          cd build
+          cpack -G DEB
+          ls -lh *.deb
+
+      - name: Upload .deb to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/*.deb
+          generate_release_notes: true
+
+  # ── AppImage ──────────────────────────────────────────────────────────────────
+  build-appimage:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
           sudo apt-get install -y \
             cmake \
             libglfw3-dev libglew-dev libglm-dev \
@@ -24,7 +67,7 @@ jobs:
             libsqlite3-dev \
             zenity \
             patchelf \
-            fuse libfuse2
+            imagemagick
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
@@ -32,72 +75,51 @@ jobs:
       - name: Build
         run: cmake --build build -j$(nproc)
 
-      # ── .deb ────────────────────────────────────────────────────────────────
-      - name: Package .deb
-        run: |
-          cd build
-          cpack -G DEB
-
-      # ── AppImage ─────────────────────────────────────────────────────────────
       - name: Install into AppDir
+        run: DESTDIR="$GITHUB_WORKSPACE/AppDir" cmake --install build
+
+      - name: Prepare icon
         run: |
-          DESTDIR="$GITHUB_WORKSPACE/AppDir" cmake --install build
-
-      - name: Prepare AppImage assets
-        run: |
-          # .desktop file (cmake configured it into build/)
-          cp build/rammb-neovis.desktop AppDir/usr/share/applications/rammb-neovis.desktop
-
-          # AppImage expects the .desktop and icon at AppDir root as well
-          cp build/rammb-neovis.desktop AppDir/rammb-neovis.desktop
-
-          # Icon — use a placeholder SVG if no PNG exists yet
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
           if [ -f packaging/rammb-neovis.png ]; then
             cp packaging/rammb-neovis.png AppDir/rammb-neovis.png
-            mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-            cp packaging/rammb-neovis.png AppDir/usr/share/icons/hicolor/256x256/apps/rammb-neovis.png
           else
-            # Generate a minimal 256x256 placeholder icon with ImageMagick
-            sudo apt-get install -y imagemagick
             convert -size 256x256 xc:#1a3a5c \
-              -fill white -pointsize 28 -gravity Center \
+              -fill white -font DejaVu-Sans-Bold -pointsize 30 -gravity Center \
               -annotate 0 "RAMMB\nNEOVIS" \
               AppDir/rammb-neovis.png
-            mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-            cp AppDir/rammb-neovis.png AppDir/usr/share/icons/hicolor/256x256/apps/rammb-neovis.png
           fi
+          cp AppDir/rammb-neovis.png \
+             AppDir/usr/share/icons/hicolor/256x256/apps/rammb-neovis.png
 
       - name: Download linuxdeploy
         run: |
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage
-          # Extract so it works without FUSE in CI
+          # Extract so it runs without FUSE (unavailable in most CI environments)
           ./linuxdeploy-x86_64.AppImage --appimage-extract
-          echo "$GITHUB_WORKSPACE/squashfs-root/usr/bin" >> "$GITHUB_PATH"
+          mv squashfs-root linuxdeploy-squashfs
 
       - name: Build AppImage
         env:
-          # Embed the version tag into the AppImage filename
           VERSION: ${{ github.ref_name }}
+          # Suppress AppImage runtime's need for FUSE
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
-          squashfs-root/usr/bin/linuxdeploy \
+          linuxdeploy-squashfs/usr/bin/linuxdeploy \
             --appdir AppDir \
             --executable build/rammb-neovis \
             --desktop-file build/rammb-neovis.desktop \
             --icon-file AppDir/rammb-neovis.png \
             --output appimage
-          # Rename to include version
-          mv RAMMB*.AppImage rammb-neovis-${VERSION}-linux-x86_64.AppImage || \
-          mv *.AppImage rammb-neovis-${VERSION}-linux-x86_64.AppImage
 
-      # ── Upload everything to the GitHub Release ───────────────────────────
-      - name: List artifacts
-        run: ls -lh build/*.deb *.AppImage
+          # Rename to versioned filename
+          APPIMG=$(ls RAMMB*.AppImage *.AppImage 2>/dev/null | head -1)
+          mv "$APPIMG" "rammb-neovis-${VERSION}-linux-x86_64.AppImage"
+          ls -lh rammb-neovis-*.AppImage
 
-      - name: Upload to GitHub Release
+      - name: Upload AppImage to release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            build/*.deb
-            *.AppImage
-          generate_release_notes: true
+          files: rammb-neovis-*.AppImage
+          generate_release_notes: false
