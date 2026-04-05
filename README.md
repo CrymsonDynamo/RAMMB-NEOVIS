@@ -2,8 +2,7 @@
 
 A native C++/OpenGL replacement for the [RAMMB Slider](https://rammb-slider.cira.colostate.edu/) satellite imagery browser. Faster, offline-capable, and built for power users who want smooth animation, export, and regional download control.
 
-![RAMMB-NEOVIS screenshot placeholder](docs/screenshot.png)
-
+![RAMMB-NEOVIS screenshot placeholder](image.png)
 ---
 
 ## Features
