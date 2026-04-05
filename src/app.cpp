@@ -14,6 +14,8 @@
 #include <format>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <unistd.h>
 
 using json = nlohmann::json;
 
@@ -88,7 +90,24 @@ bool App::init(int width, int height) {
     std::cout << "OpenGL : " << glGetString(GL_VERSION) << "\n";
     std::cout << "GPU    : " << glGetString(GL_RENDERER) << "\n";
 
-    if (!m_renderer.init("shaders")) return false;
+    // Resolve shader directory: prefer next to the executable, fall back to
+    // the installed data path (/usr/share/rammb-neovis/shaders).
+    auto find_shader_dir = []() -> std::string {
+        // 1. Next to the executable (dev build or portable AppImage)
+        char buf[4096] = {};
+        ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (n > 0) {
+            std::filesystem::path exe_dir = std::filesystem::path(buf).parent_path();
+            if (std::filesystem::exists(exe_dir / "shaders" / "tile.vert"))
+                return (exe_dir / "shaders").string();
+        }
+        // 2. Installed data dir
+        if (std::filesystem::exists("/usr/share/rammb-neovis/shaders/tile.vert"))
+            return "/usr/share/rammb-neovis/shaders";
+        // 3. Relative fallback (cwd)
+        return "shaders";
+    };
+    if (!m_renderer.init(find_shader_dir().c_str())) return false;
     m_renderer.resize(width, height);
 
     // ── ImGui ─────────────────────────────────────────────────────────────────
