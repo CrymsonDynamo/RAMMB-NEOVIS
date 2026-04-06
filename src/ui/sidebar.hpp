@@ -2,6 +2,8 @@
 #include <string>
 #include <cstdint>
 #include <vector>
+#include <array>
+#include "../overlay_defs.hpp"
 
 // Date range for archive queries
 struct DateRange {
@@ -56,6 +58,9 @@ struct ViewState {
     bool request_end_times   = false;         // ask App to fetch avail_end_times
     int  start_time_sel      = 0;             // selected index in avail_start_times
     int  end_time_sel        = 0;             // selected index in avail_end_times
+
+    // ── Overlays ──────────────────────────────────────────────────────────────
+    std::array<OverlaySettings, OVERLAY_COUNT> overlays{};
 
     // ── Dirty flags (cleared by App after handling) ───────────────────────────
     bool source_changed   = false;

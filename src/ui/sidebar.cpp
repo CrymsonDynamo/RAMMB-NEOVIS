@@ -365,7 +365,6 @@ float sidebar_draw(ViewState& state, float window_height, float y_offset) {
 
     for (const auto& cat : PRODUCT_CATEGORIES) {
         if (!category_matches(cat, filter)) continue;
-        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         bool open = ImGui::CollapsingHeader(cat.name);
         if (!open) continue;
 
@@ -393,6 +392,46 @@ float sidebar_draw(ViewState& state, float window_height, float y_offset) {
 
     ImGui::EndChild();
     ImGui::PopStyleColor();
+
+    ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+
+    // ── Overlays (collapsible) ────────────────────────────────────────────────
+    if (ImGui::CollapsingHeader("Overlays")) {
+        ImGui::Spacing();
+
+        float cb_w   = SIDEBAR_W - 16.0f;
+        float col_w  = 84.0f;   // width of the color combo box
+
+        for (int i = 0; i < OVERLAY_COUNT; ++i) {
+            auto& ov = state.overlays[i];
+            ImGui::PushID(i);
+
+            ImGui::Checkbox(OVERLAY_DEFS[i].name, &ov.enabled);
+
+            // Color combo, right-aligned on the same line
+            ImGui::SameLine(cb_w - col_w);
+            ImGui::SetNextItemWidth(col_w);
+            if (ImGui::BeginCombo("##color", OVERLAY_COLORS[ov.color_idx],
+                                  ImGuiComboFlags_NoArrowButton)) {
+                for (int c = 0; c < OVERLAY_COLOR_COUNT; ++c) {
+                    bool sel = (ov.color_idx == c);
+                    if (ImGui::Selectable(OVERLAY_COLORS[c], sel))
+                        ov.color_idx = c;
+                    if (sel) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+
+            // Opacity slider only shown when layer is enabled
+            if (ov.enabled) {
+                ImGui::SetNextItemWidth(cb_w);
+                ImGui::SliderFloat("##opacity", &ov.opacity, 0.1f, 1.0f, "opacity %.2f");
+            }
+
+            ImGui::PopID();
+        }
+        ImGui::Spacing();
+    }
 
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 

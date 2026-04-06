@@ -8,6 +8,7 @@
 #include "renderer/renderer.hpp"
 #include "network/http_client.hpp"
 #include "tile_manager.hpp"
+#include "overlay_manager.hpp"
 #include "animation.hpp"
 #include "ui/sidebar.hpp"
 #include "ui/scene_bar.hpp"
@@ -55,6 +56,7 @@ private:
     Renderer             m_renderer;
     HttpClient           m_http;
     TileManager          m_tiles;
+    OverlayManager       m_overlays;
     AnimationController  m_anim;
     Exporter             m_exporter;
 

@@ -58,6 +58,7 @@ static std::string ts_to_display(int64_t ts) {
 
 App::~App() {
     m_tiles.clear(m_renderer);
+    m_overlays.clear(m_renderer);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
@@ -187,6 +188,8 @@ void App::update(float dt) {
         m_tiles.clear(m_renderer);
         m_tiles.set_frames(m_state.satellite, m_state.sector, m_state.product,
                            m_state.frame_timestamps, m_state.data_zoom);
+        m_overlays.clear(m_renderer);
+        m_overlays.set_source(m_state.satellite, m_state.sector, m_state.data_zoom);
         m_state.zoom_changed = false;
     }
 
@@ -280,6 +283,10 @@ void App::update(float dt) {
                    pan.y - half_h, pan.y + half_h,
                    m_state.current_frame,
                    m_renderer);
+
+    m_overlays.update(pan.x - half_w, pan.x + half_w,
+                      pan.y - half_h, pan.y + half_h,
+                      m_state.overlays, m_renderer);
 }
 
 void App::render() {
@@ -455,6 +462,7 @@ void App::render() {
     m_renderer.resize_viewport(int(vp_left), int(bottom_h), int(vp_w), render_h_i);
     m_renderer.begin_frame();
     m_tiles.draw(m_state.current_frame, m_renderer);
+    m_overlays.draw(m_state.overlays, m_renderer);
     glDisable(GL_SCISSOR_TEST);
     m_renderer.resize_viewport(0, 0, win_w, win_h);
 
@@ -660,6 +668,8 @@ void App::apply_frames() {
 
 void App::reload_source() {
     m_tiles.clear(m_renderer);
+    m_overlays.clear(m_renderer);
+    m_overlays.set_source(m_state.satellite, m_state.sector, m_state.data_zoom);
     m_anim.clear();
     m_state.frame_timestamps.clear();
     m_state.current_frame = 0;
