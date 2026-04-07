@@ -15,11 +15,13 @@ struct SceneBar {
     bool settings_open = false;
 
     // App-level settings that don't belong in per-scene ViewState
-    bool  vsync          = true;
-    bool  dark_ui        = true;
-    int   cache_limit_mb = 512;   // in-memory tile cache cap
-    bool  auto_reload    = false; // reload source on timer
-    int   auto_reload_s  = 300;   // seconds between auto-reloads
+    bool  vsync              = true;
+    bool  dark_ui            = true;
+    int   cache_limit_mb     = 512;   // in-memory tile cache cap
+    bool  auto_reload        = false; // reload source on timer
+    int   auto_reload_s      = 300;   // seconds between auto-reloads
+    int   download_limit_kbps = 0;
+    int   download_threads    = 4;
 };
 
 // Draws the scene tab bar + settings panel.

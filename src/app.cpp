@@ -164,11 +164,45 @@ void App::run() {
 void App::update(float dt) {
     notifs_tick(dt);
 
+    // ── Compute selected-tile bounding box (kept current every frame) ────────
+    {
+        int  Z  = m_state.data_zoom;
+        int  T  = 1 << Z;
+        bool has_sel = !m_state.tile_select_all &&
+                       int(m_state.tile_selection.size()) == T * T;
+
+        m_export_state.has_tile_selection = has_sel;
+
+        if (has_sel) {
+            // Union world-space bounds of all selected tiles
+            float xmn =  0.5f, xmx = -0.5f;
+            float ymn =  0.5f, ymx = -0.5f;
+            for (int r = 0; r < T; ++r) {
+                for (int c = 0; c < T; ++c) {
+                    if (!m_state.tile_selection[r * T + c]) continue;
+                    float tx0 = float(c)     / float(T) - 0.5f;
+                    float tx1 = float(c + 1) / float(T) - 0.5f;
+                    float ty0 = 0.5f - float(r + 1) / float(T);
+                    float ty1 = 0.5f - float(r)     / float(T);
+                    xmn = std::min(xmn, tx0); xmx = std::max(xmx, tx1);
+                    ymn = std::min(ymn, ty0); ymx = std::max(ymx, ty1);
+                }
+            }
+            if (xmx > xmn && ymx > ymn)
+                m_export_state.tile_bounds = { xmn, xmx, ymn, ymx };
+            else
+                m_export_state.tile_bounds = { -0.5f, 0.5f, -0.5f, 0.5f };
+        } else {
+            m_export_state.tile_bounds = { -0.5f, 0.5f, -0.5f, 0.5f };
+        }
+    }
+
     // ── Export button ─────────────────────────────────────────────────────────
     if (m_state.export_requested) {
         m_state.export_requested = false;
         m_export_state.open = true;
-        m_export_state.crop = { -0.5f, 0.5f, -0.5f, 0.5f }; // default: full image
+        // Auto-fit crop to selected tiles (or full image if none selected)
+        m_export_state.crop = m_export_state.tile_bounds;
     }
 
     // ── Handle sidebar dirty flags ────────────────────────────────────────────
@@ -247,7 +281,7 @@ void App::update(float dt) {
         m_state.timestamp_str = ts_to_display(m_anim.current_timestamp());
 
     // ── Throttle ──────────────────────────────────────────────────────────────
-    m_tiles.set_throttle(m_state.download_limit_kbps);
+    m_tiles.set_throttle(m_scene_bar.download_limit_kbps);
 
     // ── Tile failure warnings ─────────────────────────────────────────────────
     {
@@ -265,7 +299,7 @@ void App::update(float dt) {
     // ── Update TileManager with current viewport ──────────────────────────────
     int win_w = 1, win_h = 1;
     glfwGetFramebufferSize(m_window, &win_w, &win_h);
-    static constexpr float BOTTOM_H = 52.0f + 32.0f; // timeline + status bar
+    static constexpr float BOTTOM_H = 80.0f + 32.0f; // timeline + status bar
     float vp_w    = float(win_w) - m_sidebar_w;
     float render_h = std::max(1.0f, float(win_h) - BOTTOM_H - m_bar_h);
     float aspect  = vp_w / render_h;
@@ -307,7 +341,7 @@ void App::render() {
     float vp_w     = float(win_w) - vp_left;
 
     // Heights of bottom UI panels
-    static constexpr float TIMELINE_H  = 52.0f;
+    static constexpr float TIMELINE_H  = 80.0f;
     static constexpr float STATUSBAR_H = 32.0f;
     float bottom_h  = TIMELINE_H + STATUSBAR_H;
     float render_h  = float(win_h) - bottom_h - bar_h;
@@ -333,7 +367,11 @@ void App::render() {
         vp_w,    TIMELINE_H,
         m_state.frame_timestamps,
         m_state.current_frame,
-        m_state.playing);
+        m_state.playing,
+        m_timeline,
+        m_export_state.use_frame_range,
+        m_export_state.frame_range_start,
+        m_export_state.frame_range_end);
     if (scrubbed) m_anim.jump(m_state.current_frame);
 
     // ── Status / progress bar ─────────────────────────────────────────────────
@@ -422,7 +460,7 @@ void App::render() {
         bool triggered = export_panel_draw(
             m_export_state,
             svp_x, svp_y, svp_w, svp_h,
-            int(m_state.frame_timestamps.size()),
+            m_state.frame_timestamps,
             s2w, w2s);
 
         if (triggered && !m_exporter.running()) {
@@ -430,14 +468,19 @@ void App::render() {
             auto prog = std::make_shared<ExportProgress>();
             m_export_state.progress = prog;
 
-            int N = int(m_state.frame_timestamps.size());
+            int total_N  = int(m_state.frame_timestamps.size());
+            int fi_start = m_export_state.use_frame_range
+                ? std::clamp(m_export_state.frame_range_start, 0, total_N - 1) : 0;
+            int fi_end   = m_export_state.use_frame_range
+                ? std::clamp(m_export_state.frame_range_end,   0, total_N - 1) : total_N - 1;
+            int N  = fi_end - fi_start + 1;
             int ow = m_export_state.settings.out_width;
             int oh = m_export_state.settings.out_height;
             CropRegion cr = m_export_state.crop;
 
             std::vector<ExportFrame> frames;
             frames.reserve(N);
-            for (int fi = 0; fi < N; ++fi) {
+            for (int fi = fi_start; fi <= fi_end; ++fi) {
                 auto tile_list = m_tiles.ready_tiles_for_frame(fi);
                 Renderer::OffscreenResult res;
                 if (m_renderer.render_offscreen(
@@ -724,7 +767,7 @@ void App::cb_scroll(GLFWwindow* w, double /*dx*/, double dy) {
     // is pixel-accurate relative to the imagery.
     int win_w = 1, win_h = 1;
     glfwGetWindowSize(w, &win_w, &win_h);
-    static constexpr float BOTTOM_H = 52.0f + 32.0f;
+    static constexpr float BOTTOM_H = 80.0f + 32.0f;
     float svp_x = app->m_sidebar_w;
     float svp_y = app->m_bar_h;
     float svp_w = float(win_w) - svp_x;
@@ -779,7 +822,7 @@ void App::cb_cursor_pos(GLFWwindow* w, double x, double y) {
 
     int win_w = 1, win_h = 1;
     glfwGetWindowSize(w, &win_w, &win_h);
-    static constexpr float BOTTOM_H = 52.0f + 32.0f; // timeline + status bar
+    static constexpr float BOTTOM_H = 80.0f + 32.0f; // timeline + status bar
     float vp_w    = float(win_w) - app->m_sidebar_w;
     float render_h = std::max(1.0f, float(win_h) - BOTTOM_H - app->m_bar_h);
     float aspect  = vp_w / render_h;

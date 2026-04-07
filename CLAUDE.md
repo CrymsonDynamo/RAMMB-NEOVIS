@@ -58,7 +58,9 @@ ImGui and stb are fetched automatically by CMake (FetchContent) on first configu
 - `Exporter` runs in a background thread; frames are passed via a queue
 - FFmpeg encodes MP4 (H.264 or NVENC) / GIF; raw PNG uses stb_image_write
 
-**Scene tabs:** `SceneBar` stores a `std::vector<Scene>`, each holding a full `ViewState` snapshot. Switching tabs restores state and sets `source_changed = true` to trigger a reload.
+**Scene tabs:** `SceneBar` stores a `std::vector<Scene>`, each holding a full `ViewState` snapshot. Switching tabs restores state and sets `source_changed = true` only if the source parameters (satellite, sector, product, data_zoom, num_frames, time_step, date_range) actually differ — preventing spurious redownloads when the imagery is unchanged. App-level settings (download throttle, threads, VSync, cache limit) live in `SceneBar`, not `ViewState`.
+
+**Overlay pipeline:** `OverlayManager` fetches map overlay tiles (borders, states, roads, etc.) from the same RAMMB Slider CDN. Each layer has a phase state machine (IDLE → FETCHING_TS → READY / FAILED). Timestamp is resolved by taking `max` of all entries in `latest_times_all.json` — `arr[0]` is a `19700101` placeholder. Overlay tiles are pixel-perfect aligned with imagery tiles at the same zoom/row/col. Rendered after imagery tiles in `app.cpp` render loop.
 
 **Shader resolution order** (see `App::init`):
 1. Directory next to the executable (dev build, AppImage)
@@ -76,9 +78,15 @@ ImGui and stb are fetched automatically by CMake (FetchContent) on first configu
 | `src/ui/sidebar.cpp` | Date range picker, API timestamp dropdowns, animation controls |
 | `src/ui/export_panel.cpp` | Crop box overlay, resolution presets (aspect-ratio-aware) |
 | `src/ui/tools_panel.cpp` | Interactive tile grid overlay (click/drag to select/deselect) |
-| `src/ui/scene_bar.cpp` | Tab bar, scene state save/restore, settings panel |
+| `src/ui/scene_bar.cpp` | Tab bar, inline rename (double-click), scene state save/restore, settings panel |
+| `src/overlay_defs.hpp` | Shared overlay key/name/color/settings types; `OVERLAY_DEFS` array |
+| `src/overlay_manager.cpp` | Async overlay tile fetcher; per-layer phase state machine; timestamp max-selection fix |
+| `src/ui/timeline.cpp` | Blender-style timeline: ruler, frame dots, amber playhead, draggable export range band |
 | `shaders/tile.vert/.frag` | GLSL 4.5 — tile rendering with pan/zoom projection |
 
 ## API
 
 Tile imagery is fetched from `https://slider.cira.colostate.edu/data`. Available timestamps per day are fetched from `YYYYMMDD_by_hour.json` endpoints. All network calls use `HttpClient` (synchronous CURL, `thread_local` handles for per-thread reuse).
+
+Overlay tile URL pattern: `data/maps/{sat}/{sec}/{overlay}/{color}/{ts}/{zoom:02d}/{row:03d}_{col:03d}.png`
+Overlay timestamp lookup: `data/json/{sat}/{sec}/maps/{overlay}/{color}/latest_times_all.json` — always use `max` of the array, not index 0.

@@ -606,31 +606,6 @@ float sidebar_draw(ViewState& state, float window_height, float y_offset) {
 
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
-    // ── Settings (collapsible) ─────────────────────────────────────────────────
-    if (ImGui::CollapsingHeader("Settings")) {
-        ImGui::Spacing();
-        ImGui::TextColored(COL_DIM, "Download Speed Limit");
-        bool unlimited = (state.download_limit_kbps == 0);
-        if (ImGui::Checkbox("Unlimited", &unlimited))
-            state.download_limit_kbps = unlimited ? 0 : 5120;
-        if (!unlimited) {
-            ImGui::SetNextItemWidth(SIDEBAR_W - 16.0f);
-            ImGui::SliderInt("##throttle", &state.download_limit_kbps, 128, 51200, "%d KB/s");
-            ImGui::TextColored(COL_DIM, "  Presets:"); ImGui::SameLine();
-            if (ImGui::SmallButton("1 MB/s"))  state.download_limit_kbps = 1024;
-            ImGui::SameLine();
-            if (ImGui::SmallButton("5 MB/s"))  state.download_limit_kbps = 5120;
-            ImGui::SameLine();
-            if (ImGui::SmallButton("20 MB/s")) state.download_limit_kbps = 20480;
-        }
-        ImGui::Spacing();
-        ImGui::TextColored(COL_DIM, "Concurrent Downloads");
-        ImGui::SetNextItemWidth(SIDEBAR_W - 16.0f);
-        ImGui::SliderInt("##threads", &state.download_threads, 1, 32, "%d threads");
-        ImGui::TextColored(COL_DIM, "  (takes effect on next refresh)");
-        ImGui::Spacing();
-    }
-
     ImGui::End();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(3);

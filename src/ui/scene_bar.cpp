@@ -45,26 +45,87 @@ float scene_bar_draw(SceneBar& bar, ViewState& active_state, float win_w, float 
 
     // ── Scene tabs ────────────────────────────────────────────────────────────
     int del_idx = -1;
+    static int  s_rename_idx = -1;          // which tab is being renamed (-1 = none)
+    static char s_rename_buf[64] = {};
+    static bool s_rename_focus = false;     // true on the first frame the InputText opens
+
     for (int i = 0; i < int(bar.scenes.size()); ++i) {
         bool is_active = (i == bar.active);
+        bool is_renaming = (s_rename_idx == i);
 
-        // Highlight active tab
-        if (is_active) {
-            ImGui::PushStyleColor(ImGuiCol_Button,        { 0.15f,0.45f,0.80f,1.0f });
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, { 0.20f,0.60f,1.00f,1.0f });
-        }
-
-        // Tab label button
         ImGui::PushID(i);
-        if (ImGui::Button(bar.scenes[i].name.c_str(), { 0, BAR_H - 8.0f })) {
-            // Switch scene: restore that scene's state
-            bar.active    = i;
-            active_state  = bar.scenes[i].state;
-            // Force full reload on next frame
-            active_state.source_changed = true;
-        }
 
-        if (is_active) ImGui::PopStyleColor(2);
+        if (is_renaming) {
+            // Inline rename input
+            if (s_rename_focus) {
+                ImGui::SetKeyboardFocusHere();
+                s_rename_focus = false;
+            }
+            ImGui::SetNextItemWidth(std::max(60.0f,
+                ImGui::CalcTextSize(s_rename_buf).x + 20.0f));
+            if (ImGui::InputText("##rename", s_rename_buf, sizeof(s_rename_buf),
+                                 ImGuiInputTextFlags_EnterReturnsTrue |
+                                 ImGuiInputTextFlags_AutoSelectAll)) {
+                // Enter confirms
+                if (s_rename_buf[0] != '\0')
+                    bar.scenes[i].name = s_rename_buf;
+                s_rename_idx = -1;
+            }
+            if (!ImGui::IsItemActive() && !ImGui::IsItemHovered() &&
+                ImGui::IsMouseClicked(0)) {
+                // Click outside cancels
+                if (s_rename_buf[0] != '\0')
+                    bar.scenes[i].name = s_rename_buf;
+                s_rename_idx = -1;
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) s_rename_idx = -1;
+        } else {
+            if (is_active) {
+                ImGui::PushStyleColor(ImGuiCol_Button,        { 0.15f,0.45f,0.80f,1.0f });
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, { 0.20f,0.60f,1.00f,1.0f });
+            }
+
+            if (ImGui::Button(bar.scenes[i].name.c_str(), { 0, BAR_H - 8.0f })) {
+                if (i != bar.active) {
+                    // Switching to a different tab — only reload if the source
+                    // params actually differ from what's currently loaded.
+                    const ViewState& nxt = bar.scenes[i].state;
+                    bool src_diff =
+                        nxt.satellite       != active_state.satellite ||
+                        nxt.sector          != active_state.sector    ||
+                        nxt.product         != active_state.product   ||
+                        nxt.data_zoom       != active_state.data_zoom ||
+                        nxt.num_frames      != active_state.num_frames||
+                        nxt.time_step       != active_state.time_step ||
+                        nxt.date_range.use_range  != active_state.date_range.use_range ||
+                        nxt.date_range.start_year != active_state.date_range.start_year||
+                        nxt.date_range.start_month!= active_state.date_range.start_month||
+                        nxt.date_range.start_day  != active_state.date_range.start_day ||
+                        nxt.date_range.end_year   != active_state.date_range.end_year  ||
+                        nxt.date_range.end_month  != active_state.date_range.end_month ||
+                        nxt.date_range.end_day    != active_state.date_range.end_day;
+                    bar.active   = i;
+                    active_state = bar.scenes[i].state;
+                    active_state.source_changed = src_diff;
+                }
+                // Clicking the already-active tab does nothing.
+            }
+
+            // Double-click on the active tab → rename only, never reload.
+            // Because clicking an already-active tab does nothing above,
+            // source_changed is guaranteed false at this point.
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+                s_rename_idx   = bar.active;  // always rename the active tab
+                strncpy(s_rename_buf, bar.scenes[bar.active].name.c_str(),
+                        sizeof(s_rename_buf) - 1);
+                s_rename_buf[sizeof(s_rename_buf) - 1] = '\0';
+                s_rename_focus = true;
+            }
+
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Double-click to rename");
+
+            if (is_active) ImGui::PopStyleColor(2);
+        }
 
         // Close (×) button — only show if more than one scene
         if (bar.scenes.size() > 1) {
@@ -174,14 +235,28 @@ float scene_bar_draw(SceneBar& bar, ViewState& active_state, float win_w, float 
         }
 
         ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
-        ImGui::TextColored(COL_ACCENT, "SCENE NAME");
+        ImGui::TextColored(COL_ACCENT, "DOWNLOADS");
         ImGui::Spacing();
-        static char scene_name_buf[64] = {};
-        Scene& cur = bar.scenes[bar.active];
-        strncpy(scene_name_buf, cur.name.c_str(), sizeof(scene_name_buf) - 1);
+        ImGui::Text("Speed limit:");
+        bool unlimited = (bar.download_limit_kbps == 0);
+        if (ImGui::Checkbox("Unlimited##dl", &unlimited))
+            bar.download_limit_kbps = unlimited ? 0 : 5120;
+        if (!unlimited) {
+            ImGui::SetNextItemWidth(PANEL_W - 16.0f);
+            ImGui::SliderInt("##throttle", &bar.download_limit_kbps,
+                             128, 51200, "%d KB/s");
+            ImGui::TextColored(COL_DIM, "  Presets:"); ImGui::SameLine();
+            if (ImGui::SmallButton("1 MB/s"))  bar.download_limit_kbps = 1024;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("5 MB/s"))  bar.download_limit_kbps = 5120;
+            ImGui::SameLine();
+            if (ImGui::SmallButton("20 MB/s")) bar.download_limit_kbps = 20480;
+        }
+        ImGui::Spacing();
+        ImGui::Text("Concurrent downloads:");
         ImGui::SetNextItemWidth(PANEL_W - 16.0f);
-        if (ImGui::InputText("##sname", scene_name_buf, sizeof(scene_name_buf)))
-            cur.name = scene_name_buf;
+        ImGui::SliderInt("##threads", &bar.download_threads, 1, 32, "%d threads");
+        ImGui::TextColored(COL_DIM, "  (takes effect on next refresh)");
 
         ImGui::End();
         ImGui::PopStyleColor();

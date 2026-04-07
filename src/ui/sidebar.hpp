@@ -47,10 +47,6 @@ struct ViewState {
     bool              tile_select_all  = true;  // true = download all, ignore mask
     bool              tools_panel_open = false;  // right-side panel visibility
 
-    // ── Settings ──────────────────────────────────────────────────────────────
-    int download_limit_kbps = 0;
-    int download_threads    = 4;
-
     // ── Available timestamps for date-range time pickers ─────────────────────
     std::vector<int64_t> avail_start_times;   // all timestamps for the start date
     std::vector<int64_t> avail_end_times;     // all timestamps for the end date

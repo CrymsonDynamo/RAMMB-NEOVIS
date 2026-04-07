@@ -13,6 +13,7 @@
 #include "ui/sidebar.hpp"
 #include "ui/scene_bar.hpp"
 #include "ui/export_panel.hpp"
+#include "ui/timeline.hpp"
 #include "export/exporter.hpp"
 
 class App {
@@ -60,9 +61,10 @@ private:
     AnimationController  m_anim;
     Exporter             m_exporter;
 
-    ViewState    m_state;
-    SceneBar     m_scene_bar;
-    ExportState  m_export_state;
+    ViewState     m_state;
+    SceneBar      m_scene_bar;
+    ExportState   m_export_state;
+    TimelineState m_timeline;
     float        m_sidebar_w{300.0f};
 
     float     m_bar_h{30.0f};    // scene tab bar height, set each render()

@@ -141,8 +141,11 @@ void OverlayManager::fetch_timestamp(int layer_idx, int color_idx) {
                 auto j = json::parse(buf.begin(), buf.end());
                 auto& arr = j.at("timestamps_int");
                 if (!arr.empty()) {
-                    // timestamps_int is sorted descending — [0] is the newest
-                    res.timestamp = arr[0].get<int64_t>();
+                    // Overlay JSONs may be sorted ascending OR descending depending on
+                    // endpoint — always pick the numerically largest (most recent) value.
+                    int64_t best = arr[0].get<int64_t>();
+                    for (auto& v : arr) best = std::max(best, v.get<int64_t>());
+                    res.timestamp = best;
                     res.ok        = true;
                 }
             } catch (const std::exception& e) {

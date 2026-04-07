@@ -150,30 +150,72 @@ static void draw_crop_overlay(ExportState&          state,
 
 // ── Export panel window ───────────────────────────────────────────────────────
 
-bool export_panel_draw(ExportState&          state,
+// Format a timestamp int64 as "YYYY-MM-DD HH:MM UTC"
+static std::string fmt_ts(int64_t ts) {
+    std::string s = std::to_string(ts);
+    if (s.size() < 12) return s;
+    return std::format("{}-{}-{} {}:{} UTC",
+        s.substr(0,4), s.substr(4,2), s.substr(6,2),
+        s.substr(8,2), s.substr(10,2));
+}
+
+// Parse "YYYYMMDDHHMMSS" or "YYYYMMDDHHMM" from text. Returns 0 on failure.
+static int64_t parse_ts(const char* buf) {
+    std::string s(buf);
+    // strip separators/spaces to get just digits
+    std::string d;
+    for (char c : s) if (c >= '0' && c <= '9') d += c;
+    if (d.size() < 12) return 0;
+    try { return std::stoll(d.substr(0, 14)); } catch (...) { return 0; }
+}
+
+// Find the frame whose timestamp is closest to the given value.
+static int nearest_frame(const std::vector<int64_t>& ts, int64_t val) {
+    int best = 0;
+    int64_t bdiff = std::abs(ts[0] - val);
+    for (int i = 1; i < int(ts.size()); ++i) {
+        int64_t d = std::abs(ts[i] - val);
+        if (d < bdiff) { bdiff = d; best = i; }
+    }
+    return best;
+}
+
+bool export_panel_draw(ExportState&                  state,
                        float vp_x, float vp_y, float vp_w, float vp_h,
-                       int   total_frames,
-                       const WorldFromScreen& s2w,
-                       const ScreenFromWorld& w2s) {
+                       const std::vector<int64_t>&   timestamps,
+                       const WorldFromScreen&         s2w,
+                       const ScreenFromWorld&         w2s) {
+    int total_frames = int(timestamps.size());
     if (!state.open) return false;
 
     // Always draw crop overlay when panel is open
     draw_crop_overlay(state, vp_x, vp_y, vp_w, vp_h, w2s, s2w);
 
-    // Position panel: right side of viewport
+    // Position panel: right side of viewport, height capped to viewport so it
+    // never overlaps the timeline below.
+    static constexpr float EXPORT_BTN_H = 36.0f; // reserved for the pinned Export button
     float panel_x = vp_x + vp_w - PANEL_W - 16.0f;
     float panel_y = vp_y + 16.0f;
-    ImGui::SetNextWindowPos({ panel_x, panel_y }, ImGuiCond_Always);
-    ImGui::SetNextWindowSize({ PANEL_W, 0 });
+    float panel_h = vp_h - 32.0f;   // 16px top margin + 16px bottom clearance
+    ImGui::SetNextWindowPos ({ panel_x, panel_y }, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({ PANEL_W, panel_h }, ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.95f);
 
     bool keep_open = true;
     ImGui::Begin("Export", &keep_open,
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_AlwaysAutoResize);
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     bool export_triggered = false;
     bool is_running = state.progress->running.load();
+
+    // ── Scrollable content area (everything except the pinned Export button) ──
+    float scroll_h = panel_h
+                     - ImGui::GetFrameHeightWithSpacing()  // title bar
+                     - EXPORT_BTN_H                        // pinned button
+                     - 8.0f;                               // bottom padding
+    ImGui::BeginChild("##exp_scroll", { PANEL_W - 8.0f, scroll_h },
+                      false, ImGuiWindowFlags_None);
 
     // ── Format ───────────────────────────────────────────────────────────────
     ImGui::TextColored(COL_ACCENT, "FORMAT");
@@ -275,13 +317,22 @@ bool export_panel_draw(ExportState&          state,
         "  Drag corners/body in viewport.");
     ImGui::Spacing();
 
-    // Reset crop to full disk
-    if (ImGui::Button("Full Image", { (PANEL_W-20.0f)*0.5f, 0 })) {
-        state.crop = { -0.5f, 0.5f, -0.5f, 0.5f };
+    float btn3_w = (PANEL_W - 20.0f - 8.0f) / 3.0f;
+
+    // Fit crop to selected tiles (highlighted when a tile selection is active)
+    if (state.has_tile_selection) {
+        ImGui::PushStyleColor(ImGuiCol_Button,        { 0.55f, 0.35f, 0.05f, 1.0f });
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, { 0.75f, 0.50f, 0.08f, 1.0f });
     }
+    if (ImGui::Button("Fit Tiles", { btn3_w, 0 }))
+        state.crop = state.tile_bounds;
+    if (state.has_tile_selection) ImGui::PopStyleColor(2);
+
     ImGui::SameLine(0, 4);
-    // Set crop to current viewport
-    if (ImGui::Button("Use Viewport", { (PANEL_W-20.0f)*0.5f, 0 })) {
+    if (ImGui::Button("Full Image", { btn3_w, 0 }))
+        state.crop = { -0.5f, 0.5f, -0.5f, 0.5f };
+    ImGui::SameLine(0, 4);
+    if (ImGui::Button("Use Viewport", { btn3_w, 0 })) {
         glm::vec2 tl = s2w({ vp_x,        vp_y });
         glm::vec2 br = s2w({ vp_x+vp_w,   vp_y+vp_h });
         state.crop.x_min = tl.x; state.crop.x_max = br.x;
@@ -317,10 +368,112 @@ bool export_panel_draw(ExportState&          state,
         ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
     }
 
-    // ── Frames summary ────────────────────────────────────────────────────────
-    ImGui::TextColored(COL_ACCENT, "FRAMES");
+    // ── Frame range ───────────────────────────────────────────────────────────
+    ImGui::TextColored(COL_ACCENT, "FRAME RANGE");
     ImGui::Spacing();
-    ImGui::Text("  %d frames will be exported", total_frames);
+
+    if (total_frames > 0) {
+        // Clamp state
+        state.frame_range_start = std::clamp(state.frame_range_start, 0, total_frames-1);
+        state.frame_range_end   = std::clamp(state.frame_range_end,   0, total_frames-1);
+        if (state.frame_range_end < state.frame_range_start)
+            state.frame_range_end = state.frame_range_start;
+
+        // All vs Custom toggle
+        float rb_w = (PANEL_W - 20.0f) * 0.5f;
+        bool all = !state.use_frame_range;
+        if (all)  { ImGui::PushStyleColor(ImGuiCol_Button,        { 0.15f,0.45f,0.80f,1.0f });
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, { 0.15f,0.45f,0.80f,1.0f }); }
+        if (ImGui::Button("All Frames", { rb_w, 0 }))
+            state.use_frame_range = false;
+        if (all) ImGui::PopStyleColor(2);
+
+        ImGui::SameLine(0, 4);
+
+        bool cust = state.use_frame_range;
+        if (cust) { ImGui::PushStyleColor(ImGuiCol_Button,        { 0.60f,0.35f,0.05f,1.0f });
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, { 0.75f,0.45f,0.08f,1.0f }); }
+        if (ImGui::Button("Custom Range", { rb_w, 0 })) {
+            state.use_frame_range   = true;
+            // Default to current loaded range if not yet set
+            if (state.frame_range_start == 0 && state.frame_range_end == 0)
+                state.frame_range_end = total_frames - 1;
+        }
+        if (cust) ImGui::PopStyleColor(2);
+
+        if (state.use_frame_range) {
+            ImGui::Spacing();
+
+            // Start frame row
+            {
+                ImGui::Text("  Start fr:"); ImGui::SameLine();
+                ImGui::SetNextItemWidth(42.0f);
+                int s = state.frame_range_start + 1;  // 1-based display
+                if (ImGui::InputInt("##rs", &s, 0)) {
+                    state.frame_range_start = std::clamp(s - 1, 0, state.frame_range_end);
+                }
+                ImGui::SameLine(0, 4);
+                ImGui::TextColored(COL_WARN, "%s",
+                    fmt_ts(timestamps[state.frame_range_start]).c_str());
+            }
+
+            // Start UTC text input
+            ImGui::Text("  UTC:     "); ImGui::SameLine();
+            static char s_start_buf[32] = {};
+            if (ImGui::IsItemDeactivatedAfterEdit() || s_start_buf[0] == '\0') {
+                std::string ts_str = std::to_string(timestamps[state.frame_range_start]);
+                strncpy(s_start_buf, ts_str.c_str(), sizeof(s_start_buf)-1);
+            }
+            ImGui::SetNextItemWidth(PANEL_W - 80.0f);
+            if (ImGui::InputText("##sutc", s_start_buf, sizeof(s_start_buf),
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+                int64_t v = parse_ts(s_start_buf);
+                if (v > 0) state.frame_range_start =
+                    std::min(nearest_frame(timestamps, v), state.frame_range_end);
+            }
+
+            ImGui::Spacing();
+
+            // End frame row
+            {
+                ImGui::Text("  End   fr:"); ImGui::SameLine();
+                ImGui::SetNextItemWidth(42.0f);
+                int e = state.frame_range_end + 1;
+                if (ImGui::InputInt("##re", &e, 0)) {
+                    state.frame_range_end = std::clamp(e - 1, state.frame_range_start, total_frames - 1);
+                }
+                ImGui::SameLine(0, 4);
+                ImGui::TextColored(COL_WARN, "%s",
+                    fmt_ts(timestamps[state.frame_range_end]).c_str());
+            }
+
+            // End UTC text input
+            ImGui::Text("  UTC:     "); ImGui::SameLine();
+            static char s_end_buf[32] = {};
+            if (s_end_buf[0] == '\0') {
+                std::string ts_str = std::to_string(timestamps[state.frame_range_end]);
+                strncpy(s_end_buf, ts_str.c_str(), sizeof(s_end_buf)-1);
+            }
+            ImGui::SetNextItemWidth(PANEL_W - 80.0f);
+            if (ImGui::InputText("##eutc", s_end_buf, sizeof(s_end_buf),
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+                int64_t v = parse_ts(s_end_buf);
+                if (v > 0) state.frame_range_end =
+                    std::max(nearest_frame(timestamps, v), state.frame_range_start);
+            }
+
+            ImGui::Spacing();
+            int n_exp = state.frame_range_end - state.frame_range_start + 1;
+            ImGui::TextColored(COL_OK, "  → %d frame%s", n_exp, n_exp != 1 ? "s" : "");
+            ImGui::TextColored({ 0.55f,0.55f,0.55f,1.0f },
+                "  Drag range handles on timeline");
+        } else {
+            ImGui::TextColored({ 0.55f,0.55f,0.55f,1.0f }, "  %d frames", total_frames);
+        }
+    } else {
+        ImGui::TextColored(COL_WARN, "  No frames loaded");
+    }
+
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
     // ── Progress ──────────────────────────────────────────────────────────────
@@ -343,7 +496,10 @@ bool export_panel_draw(ExportState&          state,
         ImGui::Spacing();
     }
 
-    // ── Export button ─────────────────────────────────────────────────────────
+    ImGui::EndChild();  // end scrollable area
+
+    // ── Export button (pinned at bottom) ──────────────────────────────────────
+    ImGui::Separator();
     if (!is_running) {
         // Determine required extension and whether the path already has it
         const char* req_ext = nullptr;
@@ -362,7 +518,10 @@ bool export_panel_draw(ExportState&          state,
                      p.compare(p.size() - ext.size(), ext.size(), ext) == 0;
         }
 
-        bool ok = path_ok && state.crop.valid() && total_frames > 0;
+        int frames_to_export = state.use_frame_range
+            ? (state.frame_range_end - state.frame_range_start + 1)
+            : total_frames;
+        bool ok = path_ok && state.crop.valid() && frames_to_export > 0;
         if (!ok) ImGui::BeginDisabled();
         ImGui::PushStyleColor(ImGuiCol_Button,        { 0.15f,0.50f,0.15f,1.0f });
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, { 0.20f,0.70f,0.20f,1.0f });
@@ -385,7 +544,7 @@ bool export_panel_draw(ExportState&          state,
                 ImGui::TextColored(COL_WARN, "  Set an output path above");
             else if (!state.crop.valid())
                 ImGui::TextColored(COL_WARN, "  Crop region is invalid");
-            else if (total_frames == 0)
+            else if (frames_to_export == 0)
                 ImGui::TextColored(COL_WARN, "  No frames loaded");
         } else if (!ext_ok && req_ext) {
             ImGui::TextColored(COL_WARN, "  Extension will be added: %s", req_ext);
