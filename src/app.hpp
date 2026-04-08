@@ -44,6 +44,16 @@ private:
     // Apply state.frame_timestamps → AnimationController + TileManager
     void apply_frames();
 
+    // Scene file I/O (use zenity for file dialogs)
+    void save_scene();
+    void save_scene_as();
+    void open_scene();
+    void update_window_title();
+
+    // Returns path chosen by zenity, or "" if cancelled.
+    std::string dialog_save_path();
+    std::string dialog_open_path();
+
     static void cb_resize      (GLFWwindow*, int, int);
     static void cb_scroll      (GLFWwindow*, double, double);
     static void cb_mouse_button(GLFWwindow*, int, int, int);

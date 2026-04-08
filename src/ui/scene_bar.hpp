@@ -22,6 +22,12 @@ struct SceneBar {
     int   auto_reload_s      = 300;   // seconds between auto-reloads
     int   download_limit_kbps = 0;
     int   download_threads    = 4;
+
+    // File persistence
+    std::string current_file;          // path to open .rnvs, empty = unsaved
+    bool save_requested    = false;    // Ctrl+S or Save button
+    bool save_as_requested = false;    // Ctrl+Shift+S or Save As button
+    bool open_requested    = false;    // Ctrl+O or Open button
 };
 
 // Draws the scene tab bar + settings panel.

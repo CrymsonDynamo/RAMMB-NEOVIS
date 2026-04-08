@@ -73,6 +73,7 @@ set(SOURCES
     src/network/http_client.cpp
     src/tile_manager.cpp
     src/overlay_manager.cpp
+    src/scene_file.cpp
     src/ui/sidebar.cpp
     src/ui/scene_bar.cpp
     src/ui/timeline.cpp

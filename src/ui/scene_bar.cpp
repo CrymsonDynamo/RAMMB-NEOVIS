@@ -209,6 +209,26 @@ float scene_bar_draw(SceneBar& bar, ViewState& active_state, float win_w, float 
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_AlwaysAutoResize);
 
+        ImGui::TextColored(COL_ACCENT, "FILE");
+        ImGui::Spacing();
+        if (ImGui::Button("Open..."))    bar.open_requested    = true;
+        ImGui::SameLine(0, 6);
+        if (ImGui::Button("Save"))       bar.save_requested    = true;
+        ImGui::SameLine(0, 6);
+        if (ImGui::Button("Save As...")) bar.save_as_requested = true;
+        if (bar.current_file.empty()) {
+            ImGui::TextColored(COL_DIM, "  Unsaved");
+        } else {
+            // Show just the filename, not the full path
+            auto slash = bar.current_file.find_last_of("/\\");
+            std::string fname = (slash == std::string::npos)
+                ? bar.current_file : bar.current_file.substr(slash + 1);
+            ImGui::TextColored(COL_DIM, "  %s", fname.c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", bar.current_file.c_str());
+        }
+
+        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
         ImGui::TextColored(COL_ACCENT, "DISPLAY");
         ImGui::Spacing();
         ImGui::Checkbox("VSync", &bar.vsync);

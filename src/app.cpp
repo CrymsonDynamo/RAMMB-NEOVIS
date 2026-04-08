@@ -4,6 +4,7 @@
 #include "ui/timeline.hpp"
 #include "ui/tools_panel.hpp"
 #include "ui/notifications.hpp"
+#include "scene_file.hpp"
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -144,6 +145,99 @@ bool App::init(int width, int height) {
     return true;
 }
 
+// ── Scene file I/O ────────────────────────────────────────────────────────────
+
+static std::string popen_line(const std::string& cmd) {
+    FILE* f = popen(cmd.c_str(), "r");
+    if (!f) return "";
+    char buf[4096] = {};
+    if (fgets(buf, sizeof(buf), f)) {
+        size_t n = strlen(buf);
+        if (n > 0 && buf[n - 1] == '\n') buf[n - 1] = '\0';
+    }
+    pclose(f);
+    return buf;
+}
+
+std::string App::dialog_save_path() {
+    std::string def = m_scene_bar.current_file.empty()
+        ? "untitled.rnvs" : m_scene_bar.current_file;
+    // Escape double-quotes in the path just in case
+    std::string cmd =
+        "zenity --file-selection --save --confirm-overwrite "
+        "--file-filter=\"*.rnvs\" "
+        "--title=\"Save Scene\" "
+        "--filename=\"" + def + "\" 2>/dev/null";
+    std::string path = popen_line(cmd);
+    // Ensure .rnvs extension
+    if (!path.empty() &&
+        (path.size() < 5 || path.substr(path.size() - 5) != ".rnvs"))
+        path += ".rnvs";
+    return path;
+}
+
+std::string App::dialog_open_path() {
+    return popen_line(
+        "zenity --file-selection "
+        "--file-filter=\"*.rnvs\" "
+        "--title=\"Open Scene\" 2>/dev/null");
+}
+
+void App::update_window_title() {
+    if (m_scene_bar.current_file.empty()) {
+        glfwSetWindowTitle(m_window, "RAMMB-NEOVIS");
+    } else {
+        auto slash = m_scene_bar.current_file.find_last_of("/\\");
+        std::string fname = (slash == std::string::npos)
+            ? m_scene_bar.current_file
+            : m_scene_bar.current_file.substr(slash + 1);
+        glfwSetWindowTitle(m_window, ("RAMMB-NEOVIS — " + fname).c_str());
+    }
+}
+
+void App::save_scene() {
+    // Sync current live state into the active scene slot before saving
+    m_scene_bar.scenes[m_scene_bar.active].state = m_state;
+    std::string err = scene_save(m_scene_bar.current_file, m_scene_bar);
+    if (err.empty()) {
+        push_notif("Saved: " + m_scene_bar.current_file, NotifLevel::Info, 3.0f);
+        update_window_title();
+    } else {
+        push_notif("Save failed: " + err, NotifLevel::Error, 6.0f);
+    }
+}
+
+void App::save_scene_as() {
+    std::string path = dialog_save_path();
+    if (path.empty()) return;  // cancelled
+    m_scene_bar.current_file = path;
+    save_scene();
+}
+
+void App::open_scene() {
+    std::string path = dialog_open_path();
+    if (path.empty()) return;  // cancelled
+
+    SceneBar new_bar;
+    std::string err = scene_load(path, new_bar);
+    if (!err.empty()) {
+        push_notif("Open failed: " + err, NotifLevel::Error, 6.0f);
+        return;
+    }
+
+    // Keep current_file from the newly loaded bar, merge rest
+    new_bar.current_file = path;
+    m_scene_bar = std::move(new_bar);
+    m_scene_bar.current_file = path;
+
+    // Restore active scene state and trigger data reload
+    m_state = m_scene_bar.scenes[m_scene_bar.active].state;
+    m_state.source_changed = true;
+
+    update_window_title();
+    push_notif("Opened: " + path, NotifLevel::Info, 3.0f);
+}
+
 void App::run() {
     double prev_time = glfwGetTime();
     while (m_running && !glfwWindowShouldClose(m_window)) {
@@ -163,6 +257,23 @@ void App::run() {
 
 void App::update(float dt) {
     notifs_tick(dt);
+
+    // ── File I/O requests (from scene_bar buttons or keyboard shortcuts) ──────
+    if (m_scene_bar.open_requested) {
+        m_scene_bar.open_requested = false;
+        open_scene();
+    }
+    if (m_scene_bar.save_as_requested) {
+        m_scene_bar.save_as_requested = false;
+        save_scene_as();
+    }
+    if (m_scene_bar.save_requested) {
+        m_scene_bar.save_requested = false;
+        if (m_scene_bar.current_file.empty())
+            save_scene_as();
+        else
+            save_scene();
+    }
 
     // ── Compute selected-tile bounding box (kept current every frame) ────────
     {
@@ -737,9 +848,25 @@ void App::cb_resize(GLFWwindow* w, int width, int height) {
     static_cast<App*>(glfwGetWindowUserPointer(w))->m_renderer.resize(width, height);
 }
 
-void App::cb_key(GLFWwindow* w, int key, int /*sc*/, int action, int /*mods*/) {
+void App::cb_key(GLFWwindow* w, int key, int /*sc*/, int action, int mods) {
     if (action != GLFW_PRESS) return;
     auto* app = static_cast<App*>(glfwGetWindowUserPointer(w));
+
+    // Ctrl+S / Ctrl+Shift+S / Ctrl+O work even when ImGui has keyboard focus
+    bool ctrl  = (mods & GLFW_MOD_CONTROL) != 0;
+    bool shift = (mods & GLFW_MOD_SHIFT)   != 0;
+    if (ctrl && key == GLFW_KEY_S) {
+        if (shift || app->m_scene_bar.current_file.empty())
+            app->m_scene_bar.save_as_requested = true;
+        else
+            app->m_scene_bar.save_requested = true;
+        return;
+    }
+    if (ctrl && key == GLFW_KEY_O) {
+        app->m_scene_bar.open_requested = true;
+        return;
+    }
+
     if (ImGui::GetIO().WantCaptureKeyboard) return;
 
     switch (key) {
