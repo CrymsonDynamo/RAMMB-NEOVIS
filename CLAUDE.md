@@ -25,16 +25,27 @@ There are no tests. The only validation is a successful build and runtime smoke 
 
 ## Dependencies
 
-System packages required (Ubuntu/Debian):
+One codebase for Linux and macOS (same `CMakeLists.txt`).
+
+Ubuntu/Debian:
 ```bash
 sudo apt install cmake libglfw3-dev libglew-dev libglm-dev \
   libcurl4-openssl-dev libavcodec-dev libavformat-dev libavutil-dev \
   libswscale-dev nlohmann-json3-dev libsqlite3-dev zenity
 ```
 
-ImGui and stb are fetched automatically by CMake (FetchContent) on first configure.
+macOS (Homebrew):
+```bash
+brew install cmake glfw glew glm curl ffmpeg nlohmann-json sqlite pkg-config
+```
 
-`<format>` requires GCC 13+. Ubuntu 22.04 ships GCC 11 — use Ubuntu 24.04 or install `gcc-13`.
+Optional macOS `.app`: `-DRAMMB_MACOSX_BUNDLE=ON`.
+
+ImGui, stb, and portable-file-dialogs are fetched by CMake (FetchContent) on first configure.
+
+`<format>` requires GCC 13+ / recent Apple Clang. Ubuntu 22.04 ships GCC 11 — use Ubuntu 24.04 or install `gcc-13`.
+
+OpenGL: **4.5** on Linux, **4.1 + forward compat** on macOS (Apple deprecated OpenGL; still used for the shared renderer).
 
 ## Architecture
 

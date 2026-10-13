@@ -9,6 +9,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(RAMMB_GL_LOADER "glew" CACHE STRING "OpenGL loader: glew (glad optional later)")
 set_property(CACHE RAMMB_GL_LOADER PROPERTY STRINGS glew)
 
+# Optional macOS .app (default OFF — CLI next to shaders/ on both OSes).
+option(RAMMB_MACOSX_BUNDLE "Build a macOS .app bundle" OFF)
+
 # OpenGL context version: macOS caps at 4.1; Linux keeps 4.5.
 if(APPLE)
     set(RAMMB_GL_MAJOR 4)
@@ -165,12 +168,30 @@ if(APPLE)
     target_compile_definitions(rammb-neovis PRIVATE GL_SILENCE_DEPRECATION)
 endif()
 
-# Copy shaders next to the binary after build
+if(APPLE AND RAMMB_MACOSX_BUNDLE)
+    set_target_properties(rammb-neovis PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "RAMMB-NEOVIS"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.crymsondynamo.rammb-neovis"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
+endif()
+
+# Copy shaders next to the binary after build (CLI and AppImage layout)
 add_custom_command(TARGET rammb-neovis POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/shaders
         $<TARGET_FILE_DIR:rammb-neovis>/shaders
     COMMENT "Copying shaders")
+
+# Also stage shaders into .app Resources when bundling
+if(APPLE AND RAMMB_MACOSX_BUNDLE)
+    add_custom_command(TARGET rammb-neovis POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/shaders
+            $<TARGET_BUNDLE_CONTENT_DIR:rammb-neovis>/Resources/shaders
+        COMMENT "Copying shaders into .app Resources")
+endif()
 
 # ── Compiler flags ───────────────────────────────────────────────────────────
 if(MSVC)
@@ -183,6 +204,7 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS rammb-neovis
+    BUNDLE  DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/shaders/
@@ -197,7 +219,7 @@ if(UNIX AND NOT APPLE)
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 endif()
 
-# ── CPack — .deb on Linux; macOS packaging deferred to Phase 4 ───────────────
+# ── CPack — .deb on Linux; DragNDrop when building a macOS .app ──────────────
 set(CPACK_PACKAGE_NAME            "rammb-neovis")
 set(CPACK_PACKAGE_VENDOR          "CrymsonDynamo")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
@@ -229,5 +251,11 @@ libgl1, zenity")
         " and date range queries.")
     set(CPACK_PACKAGE_FILE_NAME
         "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-linux-amd64")
+    include(CPack)
+elseif(APPLE AND RAMMB_MACOSX_BUNDLE)
+    set(CPACK_GENERATOR "DragNDrop")
+    set(CPACK_DMG_VOLUME_NAME "RAMMB-NEOVIS")
+    set(CPACK_PACKAGE_FILE_NAME
+        "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-macos")
     include(CPack)
 endif()
