@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "platform.hpp"
 #include "ui/sidebar.hpp"
 #include "ui/scene_bar.hpp"
 #include "ui/timeline.hpp"
@@ -15,8 +16,9 @@
 #include <format>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
-#include <unistd.h>
+#include <cstdio>
 
 using json = nlohmann::json;
 
@@ -70,10 +72,7 @@ App::~App() {
 bool App::init(int width, int height) {
     if (!glfwInit()) { std::cerr << "[App] GLFW init failed\n"; return false; }
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_SAMPLES, 4);
+    platform_gl_hints();
 
     m_window = glfwCreateWindow(width, height, "RAMMB-NEOVIS", nullptr, nullptr);
     if (!m_window) { std::cerr << "[App] Window failed\n"; glfwTerminate(); return false; }
@@ -88,22 +87,21 @@ bool App::init(int width, int height) {
     glfwMakeContextCurrent(m_window);
     glfwSwapInterval(1);
 
-    if (glewInit() != GLEW_OK) { std::cerr << "[App] GLEW failed\n"; return false; }
+    if (!platform_glew_init()) return false;
     std::cout << "OpenGL : " << glGetString(GL_VERSION) << "\n";
     std::cout << "GPU    : " << glGetString(GL_RENDERER) << "\n";
 
     // Resolve shader directory: prefer next to the executable, fall back to
-    // the installed data path (/usr/share/rammb-neovis/shaders).
+    // the installed data path, then cwd-relative shaders/.
     auto find_shader_dir = []() -> std::string {
-        // 1. Next to the executable (dev build or portable AppImage)
-        char buf[4096] = {};
-        ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-        if (n > 0) {
-            std::filesystem::path exe_dir = std::filesystem::path(buf).parent_path();
-            if (std::filesystem::exists(exe_dir / "shaders" / "tile.vert"))
-                return (exe_dir / "shaders").string();
+        // 1. Next to the executable (dev build, AppImage, or Mac CLI)
+        std::string exe_dir = executable_directory();
+        if (!exe_dir.empty()) {
+            std::filesystem::path p = std::filesystem::path(exe_dir) / "shaders" / "tile.vert";
+            if (std::filesystem::exists(p))
+                return (std::filesystem::path(exe_dir) / "shaders").string();
         }
-        // 2. Installed data dir
+        // 2. Installed data dir (Linux .deb; harmless miss on macOS)
         if (std::filesystem::exists("/usr/share/rammb-neovis/shaders/tile.vert"))
             return "/usr/share/rammb-neovis/shaders";
         // 3. Relative fallback (cwd)
@@ -138,7 +136,7 @@ bool App::init(int width, int height) {
 
     ImGui::GetIO().IniFilename = nullptr;
     ImGui_ImplGlfw_InitForOpenGL(m_window, true);
-    ImGui_ImplOpenGL3_Init("#version 450");
+    ImGui_ImplOpenGL3_Init(platform_imgui_glsl_version());
 
     m_running = true;
     reload_source();

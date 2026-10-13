@@ -5,6 +5,23 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# One loader for all platforms (Phase 1: GLEW; GLAD remains a future option).
+set(RAMMB_GL_LOADER "glew" CACHE STRING "OpenGL loader: glew (glad optional later)")
+set_property(CACHE RAMMB_GL_LOADER PROPERTY STRINGS glew)
+
+# OpenGL context version: macOS caps at 4.1; Linux keeps 4.5.
+if(APPLE)
+    set(RAMMB_GL_MAJOR 4)
+    set(RAMMB_GL_MINOR 1)
+    set(RAMMB_GL_FORWARD_COMPAT 1)
+    # Homebrew prefixes (Apple Silicon + Intel)
+    list(PREPEND CMAKE_PREFIX_PATH /opt/homebrew /usr/local)
+else()
+    set(RAMMB_GL_MAJOR 4)
+    set(RAMMB_GL_MINOR 5)
+    set(RAMMB_GL_FORWARD_COMPAT 0)
+endif()
+
 # ── Dependencies via FetchContent ────────────────────────────────────────────
 include(FetchContent)
 
@@ -22,7 +39,7 @@ FetchContent_Declare(stb
     GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(stb)
 
-# ── System dependencies (install via apt) ────────────────────────────────────
+# ── System dependencies (apt on Linux, Homebrew on macOS) ────────────────────
 find_package(OpenGL REQUIRED)
 find_package(GLEW   REQUIRED)
 find_package(glfw3  REQUIRED)
@@ -67,6 +84,7 @@ target_link_libraries(imgui_lib PUBLIC glfw OpenGL::GL)
 set(SOURCES
     src/main.cpp
     src/app.cpp
+    src/platform.cpp
     src/animation.cpp
     src/renderer/shader.cpp
     src/renderer/renderer.cpp
@@ -120,6 +138,17 @@ target_link_libraries(rammb-neovis PRIVATE
     ${AVUTIL_LIBRARIES}
     ${SWSCALE_LIBRARIES})
 
+# Platform compile defs (context version + Apple deprecation silence)
+target_compile_definitions(rammb-neovis PRIVATE
+    RAMMB_GL_MAJOR=${RAMMB_GL_MAJOR}
+    RAMMB_GL_MINOR=${RAMMB_GL_MINOR}
+    RAMMB_GL_FORWARD_COMPAT=${RAMMB_GL_FORWARD_COMPAT})
+
+if(APPLE)
+    target_compile_definitions(rammb-neovis PRIVATE GL_SILENCE_DEPRECATION)
+    # dyld path helpers live in system libs already linked via libc++
+endif()
+
 # Copy shaders next to the binary after build
 add_custom_command(TARGET rammb-neovis POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -138,19 +167,21 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS rammb-neovis
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})            # /usr/bin/rammb-neovis
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/shaders/
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/rammb-neovis/shaders) # /usr/share/rammb-neovis/shaders/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/rammb-neovis/shaders)
 
-# .desktop entry so it shows up in app launchers
-configure_file(
-    ${CMAKE_SOURCE_DIR}/packaging/rammb-neovis.desktop.in
-    ${CMAKE_CURRENT_BINARY_DIR}/rammb-neovis.desktop @ONLY)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/rammb-neovis.desktop
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+# .desktop entry is Linux desktop-environment specific
+if(UNIX AND NOT APPLE)
+    configure_file(
+        ${CMAKE_SOURCE_DIR}/packaging/rammb-neovis.desktop.in
+        ${CMAKE_CURRENT_BINARY_DIR}/rammb-neovis.desktop @ONLY)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/rammb-neovis.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+endif()
 
-# ── CPack — generates .deb (and .tar.gz as a bonus) ──────────────────────────
+# ── CPack — .deb on Linux; macOS packaging deferred to Phase 4 ───────────────
 set(CPACK_PACKAGE_NAME            "rammb-neovis")
 set(CPACK_PACKAGE_VENDOR          "CrymsonDynamo")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
@@ -162,26 +193,25 @@ set(CPACK_PACKAGE_VERSION_PATCH   "0")
 set(CPACK_PACKAGE_CONTACT         "https://github.com/CrymsonDynamo/RAMMB-NEOVIS")
 set(CPACK_PACKAGE_HOMEPAGE_URL    "https://github.com/CrymsonDynamo/RAMMB-NEOVIS")
 
-# .deb specific
-set(CPACK_GENERATOR "DEB")
-set(CPACK_DEBIAN_PACKAGE_MAINTAINER "CrymsonDynamo")
-set(CPACK_DEBIAN_PACKAGE_SECTION    "science")
-set(CPACK_DEBIAN_PACKAGE_PRIORITY   "optional")
-set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
-set(CPACK_DEBIAN_PACKAGE_DEPENDS
-    "libglfw3 (>= 3.3), libglew2.2 | libglew2.1, libcurl4, \
+if(UNIX AND NOT APPLE)
+    set(CPACK_GENERATOR "DEB")
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "CrymsonDynamo")
+    set(CPACK_DEBIAN_PACKAGE_SECTION    "science")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY   "optional")
+    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS
+        "libglfw3 (>= 3.3), libglew2.2 | libglew2.1, libcurl4, \
 libavcodec61 | libavcodec60 | libavcodec-extra60 | libavcodec59 | libavcodec-extra59, \
 libavformat61 | libavformat60 | libavformat59, \
 libavutil59 | libavutil58 | libavutil57, \
 libswscale8 | libswscale7 | libswscale6, \
 libgl1, zenity")
-set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
-    "RAMMB-NEOVIS — native C++/OpenGL satellite imagery viewer\n"
-    " Browse and animate GOES, Himawari and JPSS imagery from the RAMMB Slider\n"
-    " archive. Supports MP4/GIF/PNG export, regional tile selection, scene tabs,\n"
-    " and date range queries.")
-
-set(CPACK_PACKAGE_FILE_NAME
-    "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-linux-amd64")
-
-include(CPack)
+    set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
+        "RAMMB-NEOVIS — native C++/OpenGL satellite imagery viewer\n"
+        " Browse and animate GOES, Himawari and JPSS imagery from the RAMMB Slider\n"
+        " archive. Supports MP4/GIF/PNG export, regional tile selection, scene tabs,\n"
+        " and date range queries.")
+    set(CPACK_PACKAGE_FILE_NAME
+        "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-linux-amd64")
+    include(CPack)
+endif()
