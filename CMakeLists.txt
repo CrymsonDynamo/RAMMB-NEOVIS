@@ -39,6 +39,13 @@ FetchContent_Declare(stb
     GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(stb)
 
+# Portable native file dialogs (zenity/kdialog on Linux, osascript on macOS)
+FetchContent_Declare(portable_file_dialogs
+    GIT_REPOSITORY https://github.com/samhocevar/portable-file-dialogs.git
+    GIT_TAG        c12ea8c9a727f5320a2b4570aee863bbede2a204
+    GIT_SHALLOW    TRUE)
+FetchContent_MakeAvailable(portable_file_dialogs)
+
 # ── System dependencies (apt on Linux, Homebrew on macOS) ────────────────────
 find_package(OpenGL REQUIRED)
 find_package(GLEW   REQUIRED)
@@ -107,6 +114,8 @@ target_include_directories(rammb-neovis PRIVATE
     ${stb_SOURCE_DIR}
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends)
+
+target_link_libraries(rammb-neovis PRIVATE portable_file_dialogs)
 
 if(TARGET glm::glm)
     target_link_libraries(rammb-neovis PRIVATE glm::glm)

@@ -2,6 +2,7 @@
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <portable-file-dialogs.h>
 
 #include <filesystem>
 #include <iostream>
@@ -81,4 +82,60 @@ std::string executable_directory() {
     buf[n] = '\0';
     return std::filesystem::path(buf).parent_path().string();
 #endif
+}
+
+ContentScale window_content_scale(GLFWwindow* window) {
+    ContentScale s;
+    if (!window)
+        return s;
+    // Prefer framebuffer/window ratio — matches the pixels GL actually renders to.
+    int win_w = 1, win_h = 1, fb_w = 1, fb_h = 1;
+    glfwGetWindowSize(window, &win_w, &win_h);
+    glfwGetFramebufferSize(window, &fb_w, &fb_h);
+    if (win_w > 0 && win_h > 0) {
+        s.x = float(fb_w) / float(win_w);
+        s.y = float(fb_h) / float(win_h);
+    }
+    return s;
+}
+
+bool platform_primary_mod(int glfw_mods) {
+    return (glfw_mods & (GLFW_MOD_CONTROL | GLFW_MOD_SUPER)) != 0;
+}
+
+std::string platform_open_file(const char* title,
+                               const char* default_path,
+                               const char* filter_desc,
+                               const char* filter_glob) {
+    if (!pfd::settings::available())
+        return {};
+    auto sel = pfd::open_file(
+        title ? title : "Open",
+        default_path ? default_path : "",
+        { filter_desc ? filter_desc : "All Files",
+          filter_glob ? filter_glob : "*" });
+    auto result = sel.result();
+    return result.empty() ? std::string{} : result.front();
+}
+
+std::string platform_save_file(const char* title,
+                               const char* default_path,
+                               const char* filter_desc,
+                               const char* filter_glob) {
+    if (!pfd::settings::available())
+        return {};
+    return pfd::save_file(
+        title ? title : "Save",
+        default_path ? default_path : "",
+        { filter_desc ? filter_desc : "All Files",
+          filter_glob ? filter_glob : "*" }).result();
+}
+
+std::string platform_pick_folder(const char* title,
+                                 const char* default_path) {
+    if (!pfd::settings::available())
+        return {};
+    return pfd::select_folder(
+        title ? title : "Select Folder",
+        default_path ? default_path : "").result();
 }

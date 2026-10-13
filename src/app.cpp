@@ -16,9 +16,7 @@
 #include <format>
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 #include <filesystem>
-#include <cstdio>
 
 using json = nlohmann::json;
 
@@ -28,10 +26,9 @@ static constexpr const char* BASE_DATA = "https://slider.cira.colostate.edu/data
 // Inverse of Renderer::screen_to_world, using the current viewport.
 // Used by the export crop overlay.
 glm::vec2 App::world_to_screen(glm::vec2 world) const {
-    // From renderer internals: nx = ((sx - vp_x)/vp_w)*2-1, ny = -((sy-vp_y)/vp_h)*2+1
-    // world.x = pan.x + nx*half_w  →  nx = (world.x - pan.x) / half_w
+    // Logical (window) coordinates — same space as ImGui / input / s2w/w2s.
     int win_w = 1, win_h = 1;
-    glfwGetFramebufferSize(m_window, &win_w, &win_h);
+    glfwGetWindowSize(m_window, &win_w, &win_h);
     float vp_w   = float(win_w) - m_sidebar_w;
     float aspect = vp_w / float(win_h);
     float half_h = 0.5f / m_renderer.zoom();
@@ -41,7 +38,6 @@ glm::vec2 App::world_to_screen(glm::vec2 world) const {
     float nx =  (world.x - pan.x) / half_w;
     float ny = -(world.y - pan.y) / half_h;
 
-    // vp_x is sidebar_w, vp_y is 0 (top of viewport, OpenGL flips handled)
     float sx = m_sidebar_w + (nx + 1.0f) * 0.5f * vp_w;
     float sy = (ny + 1.0f) * 0.5f * float(win_h);
     return { sx, sy };
@@ -108,7 +104,10 @@ bool App::init(int width, int height) {
         return "shaders";
     };
     if (!m_renderer.init(find_shader_dir().c_str())) return false;
-    m_renderer.resize(width, height);
+    // GL viewport is in framebuffer pixels (may differ from window size on Retina).
+    int fb_w = width, fb_h = height;
+    glfwGetFramebufferSize(m_window, &fb_w, &fb_h);
+    m_renderer.resize(fb_w, fb_h);
 
     // ── ImGui ─────────────────────────────────────────────────────────────────
     IMGUI_CHECKVERSION();
@@ -145,28 +144,11 @@ bool App::init(int width, int height) {
 
 // ── Scene file I/O ────────────────────────────────────────────────────────────
 
-static std::string popen_line(const std::string& cmd) {
-    FILE* f = popen(cmd.c_str(), "r");
-    if (!f) return "";
-    char buf[4096] = {};
-    if (fgets(buf, sizeof(buf), f)) {
-        size_t n = strlen(buf);
-        if (n > 0 && buf[n - 1] == '\n') buf[n - 1] = '\0';
-    }
-    pclose(f);
-    return buf;
-}
-
 std::string App::dialog_save_path() {
     std::string def = m_scene_bar.current_file.empty()
         ? "untitled.rnvs" : m_scene_bar.current_file;
-    // Escape double-quotes in the path just in case
-    std::string cmd =
-        "zenity --file-selection --save --confirm-overwrite "
-        "--file-filter=\"*.rnvs\" "
-        "--title=\"Save Scene\" "
-        "--filename=\"" + def + "\" 2>/dev/null";
-    std::string path = popen_line(cmd);
+    std::string path = platform_save_file(
+        "Save Scene", def.c_str(), "Scene files", "*.rnvs");
     // Ensure .rnvs extension
     if (!path.empty() &&
         (path.size() < 5 || path.substr(path.size() - 5) != ".rnvs"))
@@ -175,10 +157,8 @@ std::string App::dialog_save_path() {
 }
 
 std::string App::dialog_open_path() {
-    return popen_line(
-        "zenity --file-selection "
-        "--file-filter=\"*.rnvs\" "
-        "--title=\"Open Scene\" 2>/dev/null");
+    return platform_open_file(
+        "Open Scene", "", "Scene files", "*.rnvs");
 }
 
 void App::update_window_title() {
@@ -406,8 +386,9 @@ void App::update(float dt) {
     }
 
     // ── Update TileManager with current viewport ──────────────────────────────
+    // Logical window coords — must match scroll/pan and ImGui layout (HiDPI-safe).
     int win_w = 1, win_h = 1;
-    glfwGetFramebufferSize(m_window, &win_w, &win_h);
+    glfwGetWindowSize(m_window, &win_w, &win_h);
     static constexpr float BOTTOM_H = 80.0f + 32.0f; // timeline + status bar
     float vp_w    = float(win_w) - m_sidebar_w;
     float render_h = std::max(1.0f, float(win_h) - BOTTOM_H - m_bar_h);
@@ -437,8 +418,13 @@ void App::render() {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
+    // Layout + input use logical window coordinates (ImGui space).
+    // GL viewport/scissor use framebuffer pixels via content scale.
     int win_w = 1, win_h = 1;
-    glfwGetFramebufferSize(m_window, &win_w, &win_h);
+    int fb_w = 1, fb_h = 1;
+    glfwGetWindowSize(m_window, &win_w, &win_h);
+    glfwGetFramebufferSize(m_window, &fb_w, &fb_h);
+    ContentScale scale = window_content_scale(m_window);
 
     // ── Scene tabs + settings bar (top of window, full width) ────────────────
     float bar_h = scene_bar_draw(m_scene_bar, m_state, float(win_w), float(win_h));
@@ -607,16 +593,19 @@ void App::render() {
         }
     }
 
-    // ── 3D tile render ────────────────────────────────────────────────────────
-    int render_h_i = int(render_h);
-    glScissor(int(m_sidebar_w), int(bottom_h), int(vp_w), render_h_i);
+    // ── 3D tile render (framebuffer pixels) ───────────────────────────────────
+    int gl_x = int(vp_left * scale.x);
+    int gl_y = int(bottom_h * scale.y);
+    int gl_w = std::max(1, int(vp_w * scale.x));
+    int gl_h = std::max(1, int(render_h * scale.y));
+    glScissor(gl_x, gl_y, gl_w, gl_h);
     glEnable(GL_SCISSOR_TEST);
-    m_renderer.resize_viewport(int(vp_left), int(bottom_h), int(vp_w), render_h_i);
+    m_renderer.resize_viewport(gl_x, gl_y, gl_w, gl_h);
     m_renderer.begin_frame();
     m_tiles.draw(m_state.current_frame, m_renderer);
     m_overlays.draw(m_state.overlays, m_renderer);
     glDisable(GL_SCISSOR_TEST);
-    m_renderer.resize_viewport(0, 0, win_w, win_h);
+    m_renderer.resize_viewport(0, 0, fb_w, fb_h);
 
     // ── Notification toasts (bottom-right) ───────────────────────────────────
     notifs_draw(float(win_w), float(win_h), bottom_h);
@@ -850,17 +839,17 @@ void App::cb_key(GLFWwindow* w, int key, int /*sc*/, int action, int mods) {
     if (action != GLFW_PRESS) return;
     auto* app = static_cast<App*>(glfwGetWindowUserPointer(w));
 
-    // Ctrl+S / Ctrl+Shift+S / Ctrl+O work even when ImGui has keyboard focus
-    bool ctrl  = (mods & GLFW_MOD_CONTROL) != 0;
-    bool shift = (mods & GLFW_MOD_SHIFT)   != 0;
-    if (ctrl && key == GLFW_KEY_S) {
+    // Ctrl (Linux) / Cmd (macOS) + S / Shift+S / O — even when ImGui has focus
+    bool primary = platform_primary_mod(mods);
+    bool shift   = (mods & GLFW_MOD_SHIFT) != 0;
+    if (primary && key == GLFW_KEY_S) {
         if (shift || app->m_scene_bar.current_file.empty())
             app->m_scene_bar.save_as_requested = true;
         else
             app->m_scene_bar.save_requested = true;
         return;
     }
-    if (ctrl && key == GLFW_KEY_O) {
+    if (primary && key == GLFW_KEY_O) {
         app->m_scene_bar.open_requested = true;
         return;
     }

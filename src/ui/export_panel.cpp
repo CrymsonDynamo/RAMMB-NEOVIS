@@ -1,28 +1,19 @@
 #include "export_panel.hpp"
+#include "platform.hpp"
 #include <imgui.h>
 #include <algorithm>
 #include <cstring>
-#include <cstdio>
 #include <cmath>
 #include <format>
 #include <filesystem>
 
 namespace fs = std::filesystem;
 
-// Opens a native file/folder picker via zenity (Linux). Returns selected path or "".
+// Shared native file/folder picker (zenity/kdialog on Linux, osascript on macOS).
 static std::string run_file_picker(bool directory_only, const char* title) {
-    std::string cmd = directory_only
-        ? std::format("zenity --file-selection --directory --title=\"{}\" 2>/dev/null", title)
-        : std::format("zenity --file-selection --save --confirm-overwrite --title=\"{}\" 2>/dev/null", title);
-    FILE* f = popen(cmd.c_str(), "r");
-    if (!f) return {};
-    char buf[1024] = {};
-    bool got = (fgets(buf, sizeof(buf), f) != nullptr);
-    pclose(f);
-    if (!got) return {};
-    std::string result(buf);
-    if (!result.empty() && result.back() == '\n') result.pop_back();
-    return result;
+    if (directory_only)
+        return platform_pick_folder(title);
+    return platform_save_file(title, "", "All Files", "*");
 }
 
 static const ImVec4 COL_ACCENT = { 0.20f, 0.60f, 1.00f, 1.0f };
