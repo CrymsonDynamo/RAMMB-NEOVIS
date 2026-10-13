@@ -31,8 +31,8 @@ struct ExportSettings {
 
     // Video/GIF
     float fps      = 10.0f;
-    int   crf      = 18;      // quality for x264/x265 (lower=better)
-    bool  use_nvenc= true;    // prefer NVENC h264 if available
+    int   crf      = 18;      // quality for x264 (lower=better); guides HW bitrate too
+    bool  prefer_hw_encoder = true; // NVENC (Linux) / VideoToolbox (macOS) → libx264
 
     // PNG sequence: prefix, e.g. "/path/to/frame_"  → frame_000.png
     std::string png_prefix = "frame_";

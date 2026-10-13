@@ -5,6 +5,26 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# One loader for all platforms (Phase 1: GLEW; GLAD remains a future option).
+set(RAMMB_GL_LOADER "glew" CACHE STRING "OpenGL loader: glew (glad optional later)")
+set_property(CACHE RAMMB_GL_LOADER PROPERTY STRINGS glew)
+
+# Optional macOS .app (default OFF — CLI next to shaders/ on both OSes).
+option(RAMMB_MACOSX_BUNDLE "Build a macOS .app bundle" OFF)
+
+# OpenGL context version: macOS caps at 4.1; Linux keeps 4.5.
+if(APPLE)
+    set(RAMMB_GL_MAJOR 4)
+    set(RAMMB_GL_MINOR 1)
+    set(RAMMB_GL_FORWARD_COMPAT 1)
+    # Homebrew prefixes (Apple Silicon + Intel)
+    list(PREPEND CMAKE_PREFIX_PATH /opt/homebrew /usr/local)
+else()
+    set(RAMMB_GL_MAJOR 4)
+    set(RAMMB_GL_MINOR 5)
+    set(RAMMB_GL_FORWARD_COMPAT 0)
+endif()
+
 # ── Dependencies via FetchContent ────────────────────────────────────────────
 include(FetchContent)
 
@@ -22,19 +42,30 @@ FetchContent_Declare(stb
     GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(stb)
 
-# ── System dependencies (install via apt) ────────────────────────────────────
+# Portable native file dialogs (zenity/kdialog on Linux, osascript on macOS).
+# Header-only: populate sources but skip upstream CMakeLists (requires CMake < 3.5).
+FetchContent_Declare(portable_file_dialogs
+    GIT_REPOSITORY https://github.com/samhocevar/portable-file-dialogs.git
+    GIT_TAG        c12ea8c9a727f5320a2b4570aee863bbede2a204
+    GIT_SHALLOW    TRUE)
+FetchContent_GetProperties(portable_file_dialogs)
+if(NOT portable_file_dialogs_POPULATED)
+    FetchContent_Populate(portable_file_dialogs)
+endif()
+
+# ── System dependencies (apt on Linux, Homebrew on macOS) ────────────────────
 find_package(OpenGL REQUIRED)
 find_package(GLEW   REQUIRED)
 find_package(glfw3  REQUIRED)
 find_package(CURL   REQUIRED)
 find_package(SQLite3 REQUIRED)
 
-# FFmpeg (libav*)
+# FFmpeg (libav*) — IMPORTED_TARGET carries Homebrew -L paths on macOS
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(AVCODEC  REQUIRED libavcodec)
-pkg_check_modules(AVFORMAT REQUIRED libavformat)
-pkg_check_modules(AVUTIL   REQUIRED libavutil)
-pkg_check_modules(SWSCALE  REQUIRED libswscale)
+pkg_check_modules(AVCODEC  REQUIRED IMPORTED_TARGET libavcodec)
+pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
+pkg_check_modules(AVUTIL   REQUIRED IMPORTED_TARGET libavutil)
+pkg_check_modules(SWSCALE  REQUIRED IMPORTED_TARGET libswscale)
 
 # GLM (header-only, find manually if find_package fails)
 find_package(glm QUIET)
@@ -67,6 +98,7 @@ target_link_libraries(imgui_lib PUBLIC glfw OpenGL::GL)
 set(SOURCES
     src/main.cpp
     src/app.cpp
+    src/platform.cpp
     src/animation.cpp
     src/renderer/shader.cpp
     src/renderer/renderer.cpp
@@ -88,7 +120,8 @@ target_include_directories(rammb-neovis PRIVATE
     src
     ${stb_SOURCE_DIR}
     ${imgui_SOURCE_DIR}
-    ${imgui_SOURCE_DIR}/backends)
+    ${imgui_SOURCE_DIR}/backends
+    ${portable_file_dialogs_SOURCE_DIR})
 
 if(TARGET glm::glm)
     target_link_libraries(rammb-neovis PRIVATE glm::glm)
@@ -102,11 +135,17 @@ elseif(DEFINED NLOHMANN_JSON_INCLUDE_DIR)
     target_include_directories(rammb-neovis PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
 endif()
 
+# Includes + library dirs from pkg-config (needed for Homebrew prefixes on macOS).
 target_include_directories(rammb-neovis PRIVATE
     ${AVCODEC_INCLUDE_DIRS}
     ${AVFORMAT_INCLUDE_DIRS}
     ${AVUTIL_INCLUDE_DIRS}
     ${SWSCALE_INCLUDE_DIRS})
+target_link_directories(rammb-neovis PRIVATE
+    ${AVCODEC_LIBRARY_DIRS}
+    ${AVFORMAT_LIBRARY_DIRS}
+    ${AVUTIL_LIBRARY_DIRS}
+    ${SWSCALE_LIBRARY_DIRS})
 
 target_link_libraries(rammb-neovis PRIVATE
     OpenGL::GL
@@ -115,17 +154,53 @@ target_link_libraries(rammb-neovis PRIVATE
     CURL::libcurl
     SQLite::SQLite3
     imgui_lib
-    ${AVCODEC_LIBRARIES}
-    ${AVFORMAT_LIBRARIES}
-    ${AVUTIL_LIBRARIES}
-    ${SWSCALE_LIBRARIES})
+    PkgConfig::AVCODEC
+    PkgConfig::AVFORMAT
+    PkgConfig::AVUTIL
+    PkgConfig::SWSCALE)
 
-# Copy shaders next to the binary after build
+# Preferred HW H.264 encoder name (runtime still falls back to libx264 / generic).
+if(APPLE)
+    set(RAMMB_HW_H264_ENCODER "h264_videotoolbox")
+else()
+    set(RAMMB_HW_H264_ENCODER "h264_nvenc")
+endif()
+
+# Platform compile defs (context version + Apple deprecation silence)
+target_compile_definitions(rammb-neovis PRIVATE
+    RAMMB_GL_MAJOR=${RAMMB_GL_MAJOR}
+    RAMMB_GL_MINOR=${RAMMB_GL_MINOR}
+    RAMMB_GL_FORWARD_COMPAT=${RAMMB_GL_FORWARD_COMPAT}
+    RAMMB_HW_H264_ENCODER=\"${RAMMB_HW_H264_ENCODER}\")
+
+if(APPLE)
+    target_compile_definitions(rammb-neovis PRIVATE GL_SILENCE_DEPRECATION)
+endif()
+
+if(APPLE AND RAMMB_MACOSX_BUNDLE)
+    set_target_properties(rammb-neovis PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "RAMMB-NEOVIS"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.crymsondynamo.rammb-neovis"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
+endif()
+
+# Copy shaders next to the binary after build (CLI and AppImage layout)
 add_custom_command(TARGET rammb-neovis POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/shaders
         $<TARGET_FILE_DIR:rammb-neovis>/shaders
     COMMENT "Copying shaders")
+
+# Also stage shaders into .app Resources when bundling
+if(APPLE AND RAMMB_MACOSX_BUNDLE)
+    add_custom_command(TARGET rammb-neovis POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/shaders
+            $<TARGET_BUNDLE_CONTENT_DIR:rammb-neovis>/Resources/shaders
+        COMMENT "Copying shaders into .app Resources")
+endif()
 
 # ── Compiler flags ───────────────────────────────────────────────────────────
 if(MSVC)
@@ -138,19 +213,22 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS rammb-neovis
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})            # /usr/bin/rammb-neovis
+    BUNDLE  DESTINATION .
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/shaders/
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/rammb-neovis/shaders) # /usr/share/rammb-neovis/shaders/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/rammb-neovis/shaders)
 
-# .desktop entry so it shows up in app launchers
-configure_file(
-    ${CMAKE_SOURCE_DIR}/packaging/rammb-neovis.desktop.in
-    ${CMAKE_CURRENT_BINARY_DIR}/rammb-neovis.desktop @ONLY)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/rammb-neovis.desktop
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+# .desktop entry is Linux desktop-environment specific
+if(UNIX AND NOT APPLE)
+    configure_file(
+        ${CMAKE_SOURCE_DIR}/packaging/rammb-neovis.desktop.in
+        ${CMAKE_CURRENT_BINARY_DIR}/rammb-neovis.desktop @ONLY)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/rammb-neovis.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+endif()
 
-# ── CPack — generates .deb (and .tar.gz as a bonus) ──────────────────────────
+# ── CPack — .deb on Linux; DragNDrop when building a macOS .app ──────────────
 set(CPACK_PACKAGE_NAME            "rammb-neovis")
 set(CPACK_PACKAGE_VENDOR          "CrymsonDynamo")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
@@ -162,26 +240,31 @@ set(CPACK_PACKAGE_VERSION_PATCH   "0")
 set(CPACK_PACKAGE_CONTACT         "https://github.com/CrymsonDynamo/RAMMB-NEOVIS")
 set(CPACK_PACKAGE_HOMEPAGE_URL    "https://github.com/CrymsonDynamo/RAMMB-NEOVIS")
 
-# .deb specific
-set(CPACK_GENERATOR "DEB")
-set(CPACK_DEBIAN_PACKAGE_MAINTAINER "CrymsonDynamo")
-set(CPACK_DEBIAN_PACKAGE_SECTION    "science")
-set(CPACK_DEBIAN_PACKAGE_PRIORITY   "optional")
-set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
-set(CPACK_DEBIAN_PACKAGE_DEPENDS
-    "libglfw3 (>= 3.3), libglew2.2 | libglew2.1, libcurl4, \
+if(UNIX AND NOT APPLE)
+    set(CPACK_GENERATOR "DEB")
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "CrymsonDynamo")
+    set(CPACK_DEBIAN_PACKAGE_SECTION    "science")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY   "optional")
+    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS
+        "libglfw3 (>= 3.3), libglew2.2 | libglew2.1, libcurl4, \
 libavcodec61 | libavcodec60 | libavcodec-extra60 | libavcodec59 | libavcodec-extra59, \
 libavformat61 | libavformat60 | libavformat59, \
 libavutil59 | libavutil58 | libavutil57, \
 libswscale8 | libswscale7 | libswscale6, \
 libgl1, zenity")
-set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
-    "RAMMB-NEOVIS — native C++/OpenGL satellite imagery viewer\n"
-    " Browse and animate GOES, Himawari and JPSS imagery from the RAMMB Slider\n"
-    " archive. Supports MP4/GIF/PNG export, regional tile selection, scene tabs,\n"
-    " and date range queries.")
-
-set(CPACK_PACKAGE_FILE_NAME
-    "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-linux-amd64")
-
-include(CPack)
+    set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
+        "RAMMB-NEOVIS — native C++/OpenGL satellite imagery viewer\n"
+        " Browse and animate GOES, Himawari and JPSS imagery from the RAMMB Slider\n"
+        " archive. Supports MP4/GIF/PNG export, regional tile selection, scene tabs,\n"
+        " and date range queries.")
+    set(CPACK_PACKAGE_FILE_NAME
+        "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-linux-amd64")
+    include(CPack)
+elseif(APPLE AND RAMMB_MACOSX_BUNDLE)
+    set(CPACK_GENERATOR "DragNDrop")
+    set(CPACK_DMG_VOLUME_NAME "RAMMB-NEOVIS")
+    set(CPACK_PACKAGE_FILE_NAME
+        "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-macos")
+    include(CPack)
+endif()

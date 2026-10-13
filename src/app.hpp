@@ -44,13 +44,13 @@ private:
     // Apply state.frame_timestamps → AnimationController + TileManager
     void apply_frames();
 
-    // Scene file I/O (use zenity for file dialogs)
+    // Scene file I/O (native dialogs via platform helpers)
     void save_scene();
     void save_scene_as();
     void open_scene();
     void update_window_title();
 
-    // Returns path chosen by zenity, or "" if cancelled.
+    // Returns path chosen by native dialog, or "" if cancelled.
     std::string dialog_save_path();
     std::string dialog_open_path();
 
