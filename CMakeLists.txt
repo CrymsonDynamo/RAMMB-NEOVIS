@@ -60,12 +60,12 @@ find_package(glfw3  REQUIRED)
 find_package(CURL   REQUIRED)
 find_package(SQLite3 REQUIRED)
 
-# FFmpeg (libav*)
+# FFmpeg (libav*) — IMPORTED_TARGET carries Homebrew -L paths on macOS
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(AVCODEC  REQUIRED libavcodec)
-pkg_check_modules(AVFORMAT REQUIRED libavformat)
-pkg_check_modules(AVUTIL   REQUIRED libavutil)
-pkg_check_modules(SWSCALE  REQUIRED libswscale)
+pkg_check_modules(AVCODEC  REQUIRED IMPORTED_TARGET libavcodec)
+pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
+pkg_check_modules(AVUTIL   REQUIRED IMPORTED_TARGET libavutil)
+pkg_check_modules(SWSCALE  REQUIRED IMPORTED_TARGET libswscale)
 
 # GLM (header-only, find manually if find_package fails)
 find_package(glm QUIET)
@@ -135,11 +135,17 @@ elseif(DEFINED NLOHMANN_JSON_INCLUDE_DIR)
     target_include_directories(rammb-neovis PRIVATE ${NLOHMANN_JSON_INCLUDE_DIR})
 endif()
 
+# Includes + library dirs from pkg-config (needed for Homebrew prefixes on macOS).
 target_include_directories(rammb-neovis PRIVATE
     ${AVCODEC_INCLUDE_DIRS}
     ${AVFORMAT_INCLUDE_DIRS}
     ${AVUTIL_INCLUDE_DIRS}
     ${SWSCALE_INCLUDE_DIRS})
+target_link_directories(rammb-neovis PRIVATE
+    ${AVCODEC_LIBRARY_DIRS}
+    ${AVFORMAT_LIBRARY_DIRS}
+    ${AVUTIL_LIBRARY_DIRS}
+    ${SWSCALE_LIBRARY_DIRS})
 
 target_link_libraries(rammb-neovis PRIVATE
     OpenGL::GL
@@ -148,10 +154,10 @@ target_link_libraries(rammb-neovis PRIVATE
     CURL::libcurl
     SQLite::SQLite3
     imgui_lib
-    ${AVCODEC_LIBRARIES}
-    ${AVFORMAT_LIBRARIES}
-    ${AVUTIL_LIBRARIES}
-    ${SWSCALE_LIBRARIES})
+    PkgConfig::AVCODEC
+    PkgConfig::AVFORMAT
+    PkgConfig::AVUTIL
+    PkgConfig::SWSCALE)
 
 # Preferred HW H.264 encoder name (runtime still falls back to libx264 / generic).
 if(APPLE)
