@@ -147,15 +147,22 @@ target_link_libraries(rammb-neovis PRIVATE
     ${AVUTIL_LIBRARIES}
     ${SWSCALE_LIBRARIES})
 
+# Preferred HW H.264 encoder name (runtime still falls back to libx264 / generic).
+if(APPLE)
+    set(RAMMB_HW_H264_ENCODER "h264_videotoolbox")
+else()
+    set(RAMMB_HW_H264_ENCODER "h264_nvenc")
+endif()
+
 # Platform compile defs (context version + Apple deprecation silence)
 target_compile_definitions(rammb-neovis PRIVATE
     RAMMB_GL_MAJOR=${RAMMB_GL_MAJOR}
     RAMMB_GL_MINOR=${RAMMB_GL_MINOR}
-    RAMMB_GL_FORWARD_COMPAT=${RAMMB_GL_FORWARD_COMPAT})
+    RAMMB_GL_FORWARD_COMPAT=${RAMMB_GL_FORWARD_COMPAT}
+    RAMMB_HW_H264_ENCODER=\"${RAMMB_HW_H264_ENCODER}\")
 
 if(APPLE)
     target_compile_definitions(rammb-neovis PRIVATE GL_SILENCE_DEPRECATION)
-    # dyld path helpers live in system libs already linked via libc++
 endif()
 
 # Copy shaders next to the binary after build

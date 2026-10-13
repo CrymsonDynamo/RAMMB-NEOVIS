@@ -353,8 +353,15 @@ bool export_panel_draw(ExportState&                  state,
             ImGui::SliderInt("##crf", &state.settings.crf, 0, 51, "%d");
             ImGui::TextColored({ 0.55f,0.55f,0.55f,1.0f }, "  0=lossless  18=great  28=small");
 
-            bool& nvenc = state.settings.use_nvenc;
-            ImGui::Checkbox("Use NVENC (RTX 5070 Ti)", &nvenc);
+            bool& hw = state.settings.prefer_hw_encoder;
+            ImGui::Checkbox("Prefer hardware encoder", &hw);
+            ImGui::TextColored({ 0.55f,0.55f,0.55f,1.0f },
+#ifdef __APPLE__
+                "  VideoToolbox → libx264 if unavailable"
+#else
+                "  NVENC → libx264 if unavailable"
+#endif
+            );
         }
         ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
     }
